@@ -1,0 +1,31 @@
+{
+  "name": "oddsmith",
+  "version": "0.1.0",
+  "description": "The execution desk for prediction-market agents. Turns an agent's conviction into a disciplined, real Polymarket fill, paid per call in USDt0 on X Layer via the OKX Agent Payments Protocol.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "build": "tsc --noEmit",
+    "patron": "tsx agents/patron.ts",
+    "verify": "tsx scripts/verify.ts",
+    "resolve": "tsx scripts/resolve-cli.ts"
+  },
+  "dependencies": {
+    "@okxweb3/mpp": "^0.1.0",
+    "@okxweb3/payment-router": "^0.1.0",
+    "@okxweb3/x402-core": "^0.1.0",
+    "@okxweb3/x402-evm": "^0.2.1",
+    "@okxweb3/x402-express": "^0.1.1",
+    "express": "^4.21.2",
+    "viem": "^2.21.0",
+    "dotenv": "^16.4.7",
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}

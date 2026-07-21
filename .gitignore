@@ -1,0 +1,14 @@
+node_modules/
+.env
+.env.*
+!.env.example
+dist/
+*.log
+keys/
+.data/
+
+# Internal working docs — never public (house rule)
+SUBMISSION.md
+DEMO_SCRIPT.md
+VIDEO_SCRIPT.md
+PLAN.md
