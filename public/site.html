@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Oddsmith - the execution desk for prediction-market agents</title>
+<meta name="description" content="Oddsmith turns an agent's conviction into a disciplined, real prediction-market position in one call. Paid per execution in USDt0 on X Layer." />
+<style>
+  :root {
+    --bg: #0b1020;
+    --panel: #121a30;
+    --panel-2: #0e1526;
+    --border: #223055;
+    --text: #e6e9f2;
+    --muted: #9aa5c0;
+    --accent: #6366f1;
+    --accent-bright: #a5b4fc;
+    --up: #22c55e;
+    --down: #ef4444;
+    --hold: #f59e0b;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 600px at 50% -10%, #4f46e522, transparent), var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.55;
+  }
+  a { color: var(--accent-bright); }
+  .shell { max-width: 880px; margin: 0 auto; padding: 0 20px; }
+  header.hero { padding: 64px 0 40px; text-align: center; }
+  .brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15px; color: var(--accent-bright); letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 18px; }
+  .brand .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px #6366f122; }
+  h1 { font-size: clamp(28px, 5vw, 44px); margin: 0 0 14px; line-height: 1.15; }
+  h1 span { color: var(--accent-bright); }
+  .lede { color: var(--muted); font-size: 17px; max-width: 640px; margin: 0 auto; }
+  .status-row { display: flex; justify-content: center; gap: 18px; margin-top: 22px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+  .status-pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel); }
+  .status-pill .led { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+
+  section { margin: 44px 0; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 24px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 18px; font-weight: 700; }
+
+  .demo-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  select, input.num { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); padding: 12px 14px; border-radius: 10px; font-family: var(--mono); font-size: 14px; }
+  input.num { width: 120px; }
+  select:focus, input.num:focus { outline: none; border-color: var(--accent); }
+  .field-label { font-size: 12px; color: var(--muted); margin-right: 4px; }
+  button { background: var(--accent); color: #0a0f24; border: 0; border-radius: 10px; padding: 12px 20px; font-weight: 700; font-size: 14px; cursor: pointer; white-space: nowrap; }
+  button:hover { background: var(--accent-bright); }
+  button:disabled { opacity: 0.6; cursor: default; }
+  .chips { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .chip { border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); padding: 6px 12px; border-radius: 999px; font-size: 12.5px; cursor: pointer; }
+  .chip:hover { border-color: var(--accent); color: var(--text); }
+  .result { margin-top: 18px; display: none; }
+  .result.show { display: block; }
+  .decision-badge { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 999px; font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .decision-badge.execute { background: #22c55e22; color: var(--up); }
+  .decision-badge.hold { background: #f59e0b22; color: var(--hold); }
+  .market-q { margin: 12px 0 4px; font-size: 15px; color: var(--text); }
+  .rationale { margin: 10px 0; color: var(--text); font-size: 14.5px; }
+  .kv { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 6px; }
+  .kv li { font-size: 13px; color: var(--muted); font-family: var(--mono); background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; display: flex; justify-content: space-between; gap: 12px; }
+  .kv li b { color: var(--text); font-weight: 700; }
+  .error { color: var(--down); font-size: 14px; margin-top: 14px; }
+  .hint { font-size: 12.5px; color: var(--muted); margin-top: 12px; }
+
+  .services { display: grid; gap: 12px; }
+  .svc { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; gap: 14px; flex-wrap: wrap; }
+  .svc-name { font-weight: 700; font-size: 14.5px; }
+  .svc-desc { color: var(--muted); font-size: 13px; margin-top: 3px; }
+  .svc-price { font-family: var(--mono); color: var(--accent-bright); font-weight: 700; white-space: nowrap; }
+
+  .arch-steps { display: grid; gap: 10px; counter-reset: step; }
+  .arch-steps li { list-style: none; display: flex; gap: 12px; align-items: flex-start; font-size: 14px; color: var(--text); }
+  .arch-steps li::before { counter-increment: step; content: counter(step); flex-shrink: 0; width: 24px; height: 24px; border-radius: 50%; background: var(--panel-2); border: 1px solid var(--border); color: var(--accent-bright); font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+  .arch-steps span.muted { color: var(--muted); }
+
+  footer { text-align: center; padding: 40px 0 60px; color: var(--muted); font-size: 13px; }
+  footer a { color: var(--muted); text-decoration: underline; margin: 0 8px; }
+  footer a:hover { color: var(--accent-bright); }
+</style>
+</head>
+<body>
+  <div class="shell">
+    <header class="hero">
+      <div class="brand"><span class="dot"></span> Oddsmith</div>
+      <h1>The <span>execution desk</span> for prediction-market agents</h1>
+      <p class="lede">Your research agent has the conviction. Oddsmith pulls the trigger: it resolves the thesis to a live market, refuses to chase a move that is already priced in, sizes the order under hard caps, and fires a real fill. One call, paid in USDt0 on X Layer.</p>
+      <div class="status-row">
+        <span class="status-pill"><span class="led" style="background:var(--accent)"></span> X Layer (eip155:196)</span>
+        <span class="status-pill" id="pill-pay"><span class="led"></span> checking desk...</span>
+        <span class="status-pill" id="pill-mode"><span class="led"></span> mode</span>
+      </div>
+    </header>
+
+    <section class="card">
+      <h2>Try It - See What The Desk Would Do</h2>
+      <div class="demo-row">
+        <span class="field-label">market</span>
+        <select id="coin">
+          <option value="BTC">BTC 5-minute</option>
+          <option value="ETH">ETH 5-minute</option>
+          <option value="SOL">SOL 5-minute</option>
+          <option value="XRP">XRP 5-minute</option>
+        </select>
+        <span class="field-label">outcome</span>
+        <select id="outcome">
+          <option value="up">Up</option>
+          <option value="down">Down</option>
+        </select>
+        <span class="field-label">max price</span>
+        <input class="num" id="maxprice" type="number" min="0.01" max="0.99" step="0.01" value="0.60" />
+        <button id="run-btn">Resolve</button>
+      </div>
+      <div class="chips">
+        <button class="chip" data-coin="BTC" data-outcome="up">BTC Up</button>
+        <button class="chip" data-coin="ETH" data-outcome="down">ETH Down</button>
+        <button class="chip" data-coin="SOL" data-outcome="up">SOL Up</button>
+      </div>
+      <div class="result" id="result">
+        <span class="decision-badge" id="decision-badge"></span>
+        <p class="market-q" id="market-q"></p>
+        <p class="rationale" id="rationale"></p>
+        <ul class="kv" id="kv"></ul>
+      </div>
+      <div class="error" id="error"></div>
+      <p class="hint">Free, rate-limited preview of the resolve-and-discipline path on a real live market. No wallet, no payment. The production route (<code>POST /api/execute</code>, $0.05 x402) applies the same discipline and then places a real fill.</p>
+    </section>
+
+    <section class="card">
+      <h2>Services</h2>
+      <div class="services">
+        <div class="svc">
+          <div><div class="svc-name">Execute a conviction</div><div class="svc-desc">Resolve, apply discipline, place a real Polymarket fill, return the position</div></div>
+          <div class="svc-price">$0.05 · x402 exact</div>
+        </div>
+        <div class="svc">
+          <div><div class="svc-name">Resolve and preview</div><div class="svc-desc">Find the market, read the odds, show the edge and what the desk would do</div></div>
+          <div class="svc-price">$0.01 · x402 exact</div>
+        </div>
+        <div class="svc">
+          <div><div class="svc-name">Positions and PnL</div><div class="svc-desc">Open positions with live profit and loss</div></div>
+          <div class="svc-price">$0.01 · x402 exact</div>
+        </div>
+        <div class="svc">
+          <div><div class="svc-name">Standing execution mandate</div><div class="svc-desc">Enroll once; 10% revenue split to the signal partner whose convictions drive the desk</div></div>
+          <div class="svc-price">MPP · charge + split</div>
+        </div>
+        <div class="svc">
+          <div><div class="svc-name">Pay-per-execution desk</div><div class="svc-desc">Deposit once, then fire executions against off-chain vouchers</div></div>
+          <div class="svc-price">MPP · session</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>How It Works</h2>
+      <ol class="arch-steps">
+        <li><span>A research agent forms a conviction and calls <code>POST /api/execute</code></span><span class="muted"> - paid $0.05 in USDt0 on X Layer over x402</span></li>
+        <li><span>Oddsmith resolves it to a live Polymarket market and reads the current price</span><span class="muted"> - thesis, coin and 5-minute window, or an explicit market</span></li>
+        <li><span>The discipline layer decides: never buy above your ceiling, gate on real edge, size under hard caps</span><span class="muted"> - refuses rather than fires on any doubt</span></li>
+        <li><span>It places a real on-chain fill and returns the position with proof</span><span class="muted"> - reported through OKX strategy attribution</span></li>
+      </ol>
+    </section>
+
+    <section class="card">
+      <h2>Verify On-Chain</h2>
+      <p class="rationale">Oddsmith settles across two chains and proves both. The service fee lands as a USDt0 transfer to the treasury on X Layer; the fill is a real order on Polymarket (Polygon). Neither number comes from the Oddsmith API.</p>
+      <p class="hint">Re-derive it yourself: <code>npm run verify</code> in the <a href="https://github.com/Risingtell/oddsmith" target="_blank" rel="noopener">repo</a> scans USDt0 fee transfers on X Layer and confirms every fill tx on Polygon, straight from chain data.</p>
+    </section>
+
+    <footer>
+      Listed on <a href="https://www.okx.ai" target="_blank" rel="noopener">OKX.AI</a> ·
+      <a href="https://github.com/Risingtell/oddsmith" target="_blank" rel="noopener">Source on GitHub</a> ·
+      <a href="/">API discovery</a>
+    </footer>
+  </div>
+
+<script>
+(function () {
+  var coinEl = document.getElementById('coin');
+  var outcomeEl = document.getElementById('outcome');
+  var maxEl = document.getElementById('maxprice');
+  var runBtn = document.getElementById('run-btn');
+  var resultEl = document.getElementById('result');
+  var badgeEl = document.getElementById('decision-badge');
+  var qEl = document.getElementById('market-q');
+  var ratEl = document.getElementById('rationale');
+  var kvEl = document.getElementById('kv');
+  var errorEl = document.getElementById('error');
+  var pillPay = document.getElementById('pill-pay');
+  var pillMode = document.getElementById('pill-mode');
+
+  fetch('/healthz').then(function (r) { return r.json(); }).then(function (d) {
+    pillPay.innerHTML = '<span class="led" style="background:' + (d.paymentsReady ? 'var(--up)' : 'var(--hold)') + '"></span> desk ' + (d.paymentsReady ? 'live' : 'warming up');
+    var live = d.executionMode === 'live';
+    pillMode.innerHTML = '<span class="led" style="background:' + (live ? 'var(--up)' : 'var(--hold)') + '"></span> ' + (live ? 'live execution' : 'paper mode');
+  }).catch(function () {
+    pillPay.innerHTML = '<span class="led" style="background:var(--down)"></span> status unavailable';
+  });
+
+  document.querySelectorAll('.chip[data-coin]').forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      coinEl.value = chip.getAttribute('data-coin');
+      outcomeEl.value = chip.getAttribute('data-outcome');
+      run();
+    });
+  });
+
+  function kvRow(k, v) {
+    var li = document.createElement('li');
+    li.innerHTML = '<span>' + k + '</span><b>' + v + '</b>';
+    kvEl.appendChild(li);
+  }
+
+  function run() {
+    errorEl.textContent = '';
+    resultEl.classList.remove('show');
+    runBtn.disabled = true;
+    runBtn.textContent = 'Resolving...';
+    var body = { coin: coinEl.value, outcome: outcomeEl.value, maxPrice: parseFloat(maxEl.value) || undefined, amountUsd: 2 };
+    fetch('/api/demo/resolve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.d.error || 'Resolve failed.');
+        var d = res.d;
+        var approved = d.decision && d.decision.approved;
+        badgeEl.className = 'decision-badge ' + (approved ? 'execute' : 'hold');
+        badgeEl.textContent = approved ? 'Would execute' : 'Would hold';
+        qEl.textContent = (d.market && d.market.question) || '';
+        ratEl.textContent = approved ? (d.decision.rationale || '') : (d.decision.reason || '');
+        kvEl.innerHTML = '';
+        kvRow('outcome', d.outcome);
+        kvRow('market price', typeof d.marketPrice === 'number' ? d.marketPrice.toFixed(3) : '-');
+        if (d.decision && d.decision.edge != null) kvRow('edge vs market', (d.decision.edge * 100).toFixed(1) + ' pts');
+        if (approved && d.recommendedOrder) {
+          kvRow('order', d.recommendedOrder.orderType + (d.recommendedOrder.price != null ? ' @ ' + d.recommendedOrder.price.toFixed(2) : ' (market)'));
+          kvRow('stake', '$' + Number(d.recommendedOrder.amountUsd).toFixed(2));
+        }
+        resultEl.classList.add('show');
+      })
+      .catch(function (err) { errorEl.textContent = err.message || 'Resolve failed.'; })
+      .finally(function () {
+        runBtn.disabled = false;
+        runBtn.textContent = 'Resolve';
+      });
+  }
+
+  runBtn.addEventListener('click', run);
+})();
+</script>
+</body>
+</html>
