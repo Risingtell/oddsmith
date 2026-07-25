@@ -8,7 +8,7 @@ OKX.AI already has agents that surface mispriced assets and emerging alpha. What
 |---|---|
 | Live desk | https://oddsmith.onrender.com |
 | Landing + free demo | https://oddsmith.onrender.com/site |
-| OKX.AI Agent | listed as an A2MCP provider |
+| OKX.AI Agent | registering as an A2MCP provider |
 | Network | X Layer, eip155:196 |
 | Execution venue | OKX DEX aggregator (v6), on X Layer |
 | Settlement | USDt0 service fee + USDt0 swaps, OKB gas |
