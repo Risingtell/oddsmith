@@ -128,11 +128,28 @@ export async function executeSwap(token: TokenInfo, amountUsd: number, slippageP
   if (swap.code !== "0" || !swap.data?.length) throw new Error(`swap quote failed: ${JSON.stringify(swap).slice(0, 200)}`);
   const tx = swap.data[0].tx;
   const toAmount = Number(formatUnits(BigInt(swap.data[0].routerResult?.toTokenAmount ?? "0"), token.decimals));
+  const value = BigInt(tx.value ?? "0");
+
+  // Do NOT trust the aggregator's suggested gas. Measured on X Layer it comes back
+  // around 30% under what the swap actually needs (230,400 suggested against
+  // 325,142 required), and an under-provisioned swap does not fail cheaply - it
+  // burns the whole limit and reverts. Simulate first so a doomed swap costs
+  // nothing at all, then send with headroom over a real estimate.
+  let gasLimit: bigint;
+  try {
+    const estimated = await pub.estimateGas({ account, to: tx.to as `0x${string}`, data: tx.data as Hex, value });
+    gasLimit = (estimated * 13n) / 10n;
+  } catch (e) {
+    throw new Error(`swap would revert on-chain, so it was not sent: ${(e as Error).message.split("\n")[0]}`);
+  }
+  const suggested = tx.gas ? BigInt(tx.gas) : 0n;
+  if (suggested > gasLimit) gasLimit = suggested;
+
   const swapHash = await wallet.sendTransaction({
     to: tx.to as `0x${string}`,
     data: tx.data as Hex,
-    value: BigInt(tx.value ?? "0"),
-    gas: tx.gas ? BigInt(tx.gas) : undefined,
+    value,
+    gas: gasLimit,
   });
   const rcpt = await pub.waitForTransactionReceipt({ hash: swapHash });
   return {
