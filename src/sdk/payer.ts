@@ -76,9 +76,9 @@ export class X402Payer {
     const account = privateKeyToAccount(privateKey as Hex);
     this.address = account.address;
     const client = new x402Client();
-    // Register both dialects Argus buys in: `exact` (screen/certify, EIP-3009,
-    // gasless) and `upto` (audit, Permit2-metered). Without the upto scheme the
-    // client can't answer a metered 402.
+    // Register both dialects the desk can be charged in: `exact` (every priced
+    // route today - EIP-3009, gasless for the buyer) and `upto` (Permit2-metered),
+    // so a client built on this SDK can also answer a metered 402 unchanged.
     registerExactEvmScheme(client, {
       signer: account,
       schemeOptions: { rpcUrl },

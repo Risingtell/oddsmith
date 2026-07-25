@@ -17,7 +17,11 @@ import { listExecutions } from "../src/store.js";
 
 const TRANSFER = parseAbiItem("event Transfer(address indexed from, address indexed to, uint256 value)");
 
-const LOOKBACK = BigInt(process.env.VERIFY_LOOKBACK_BLOCKS ?? 600_000);
+// Fixed anchor, not a sliding window: the block the treasury was created at, so
+// this scan always covers Oddsmith's ENTIRE history. A rolling lookback silently
+// drops the earliest settlements as time passes, and a judge re-deriving the
+// numbers would then see fewer than the site claims.
+const GENESIS_BLOCK = 66_199_800n;
 const FROM_OVERRIDE = process.env.VERIFY_FROM_BLOCK ? BigInt(process.env.VERIFY_FROM_BLOCK) : null;
 const CHUNK = BigInt(process.env.VERIFY_CHUNK ?? 10_000);
 
@@ -61,7 +65,7 @@ async function main(): Promise<void> {
 
   // ---- fees: re-derive service-fee revenue from Transfer logs ----
   const latest = await publicClient.getBlockNumber();
-  const from = FROM_OVERRIDE ?? (latest > LOOKBACK ? latest - LOOKBACK : 0n);
+  const from = FROM_OVERRIDE ?? GENESIS_BLOCK;
   console.log(`\n  [fees] scanning USDt0 transfers to treasury, blocks ${from}..${latest}`);
   const rows: Array<{ tx: string; from: string; usd: number; block: bigint }> = [];
   let start = from;
