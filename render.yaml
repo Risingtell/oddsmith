@@ -14,7 +14,7 @@ services:
     runtime: node
     region: frankfurt
     plan: starter
-    buildCommand: ./scripts/render-build.sh
+    buildCommand: bash scripts/render-build.sh
     startCommand: npm start
     healthCheckPath: /healthz
     envVars:
