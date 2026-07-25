@@ -5,8 +5,12 @@
 # external chain and no runtime binary - just Node + viem + signed OKX API calls -
 # so hosting is unconstrained and no region requirement applies.
 #
-# EXECUTION_MODE defaults to "paper" so a fresh deploy never places a real swap
-# until you flip it. Set the secrets in the Render dashboard; never commit them.
+# EXECUTION_MODE is dashboard-controlled rather than pinned here: an unset value
+# falls back to "paper" in src/config.ts, so a fresh deploy still never places a
+# real swap, but flipping this deployment to live is not silently reverted the
+# next time the blueprint syncs. Even in live mode a swap needs the caller's
+# explicit confirm:true - the mode alone fires nothing.
+# Set the secrets in the Render dashboard; never commit them.
 services:
   - type: web
     name: oddsmith
@@ -19,7 +23,7 @@ services:
       - key: NODE_VERSION
         value: "22"
       - key: EXECUTION_MODE
-        value: paper
+        sync: false
       - key: MAX_STAKE_PER_TRADE_USD
         value: "1"
       - key: MAX_STAKE_PER_DAY_USD
