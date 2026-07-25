@@ -7,7 +7,7 @@
  * into the conviction, settled in OKB gas. Nothing leaves the OKX ecosystem.
  *
  * Payment surfaces (settled in USDt0 on X Layer, eip155:196, via OKX APP):
- *   POST /api/execute    x402 exact   $0.05   resolve + discipline + real swap
+ *   POST /api/execute    x402 exact   $0.02   resolve + discipline + real swap
  *   POST /api/resolve    x402 exact   $0.01   resolve + live quote + what the desk would do
  *   POST /api/positions  x402 exact   $0.01   the desk's recent executions
  *   POST /api/mandate    MPP charge+split     standing execution mandate
@@ -65,19 +65,19 @@ function mirrorChallengeInBody(
   };
 }
 
-const executeAccepts = { scheme: "exact", network: NETWORK, payTo: PAY_TO, price: "$0.05", maxTimeoutSeconds: 600 };
+const executeAccepts = { scheme: "exact", network: NETWORK, payTo: PAY_TO, price: "$0.02", maxTimeoutSeconds: 600 };
 const resolveAccepts = { scheme: "exact", network: NETWORK, payTo: PAY_TO, price: "$0.01", maxTimeoutSeconds: 300 };
 const positionsAccepts = { scheme: "exact", network: NETWORK, payTo: PAY_TO, price: "$0.01", maxTimeoutSeconds: 300 };
 
 const EXECUTE_DESCRIPTION =
   "Execute a trading conviction as a disciplined, real swap on the OKX DEX aggregator (X Layer). " +
-  'Body: {"asset":"OKB", "amountUsd":5, optional "maxPrice":1.2, "fairValue":1.5, "slippagePercent":1, "confirm":true}. ' +
+  'Body: {"asset":"OKB", "amountUsd":1, optional "maxPrice":90, "fairValue":95, "slippagePercent":1, "confirm":true}. ' +
   "asset is a token symbol or 0x address on X Layer; the desk swaps USDt0 into it. " +
   "It refuses to buy above maxPrice (never chases) and enforces hard per-trade/daily stake caps. " +
   "A real on-chain swap needs confirm:true and the service in live mode; otherwise returns a dry-run preview.";
 const RESOLVE_DESCRIPTION =
   "Resolve a conviction to a live OKX DEX quote and show what the desk would do, without executing. " +
-  'Body: {"asset":"OKB", "amountUsd":5, optional "maxPrice", "fairValue", "slippagePercent"}. Returns the token, live price, edge, and recommended order.';
+  'Body: {"asset":"OKB", "amountUsd":1, optional "maxPrice", "fairValue", "slippagePercent"}. Returns the token, live price, edge, and recommended order.';
 const POSITIONS_DESCRIPTION = "The desk's recent executions (asset, stake, price, tx). Body: {}.";
 
 const httpServer = new x402HTTPResourceServer(resourceServer, {
@@ -139,7 +139,7 @@ app.get("/", (_req, res) =>
     executionMode: config.executionMode,
     deskWallet: deskAddress(),
     surfaces: {
-      execute: `POST /api/execute - $0.05 x402/exact - ${EXECUTE_DESCRIPTION}`,
+      execute: `POST /api/execute - $0.02 x402/exact - ${EXECUTE_DESCRIPTION}`,
       resolve: `POST /api/resolve - $0.01 x402/exact - ${RESOLVE_DESCRIPTION}`,
       positions: `POST /api/positions - $0.01 x402/exact - ${POSITIONS_DESCRIPTION}`,
       mandate: "POST /api/mandate - MPP charge+split - enroll a standing execution mandate",
@@ -168,7 +168,7 @@ app.post("/api/demo/resolve", async (req, res) => {
   const body = (req.body ?? {}) as ExecuteRequest;
   const demoReq: ExecuteRequest = {
     asset: body.asset ?? "OKB",
-    amountUsd: typeof body.amountUsd === "number" ? body.amountUsd : 2,
+    amountUsd: typeof body.amountUsd === "number" ? body.amountUsd : 1,
     maxPrice: body.maxPrice,
     fairValue: body.fairValue,
     slippagePercent: body.slippagePercent,

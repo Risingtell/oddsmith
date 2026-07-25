@@ -107,13 +107,13 @@
         <ul class="kv" id="kv"></ul>
       </div>
       <div class="error" id="error"></div>
-      <p class="hint">Free, rate-limited preview of the resolve-and-discipline path against a real live OKX DEX quote. No wallet, no payment. The production route (<code>POST /api/execute</code>, $0.05 x402) applies the same discipline and then places a real swap.</p>
+      <p class="hint">Free, rate-limited preview of the resolve-and-discipline path against a real live OKX DEX quote. No wallet, no payment. The production route (<code>POST /api/execute</code>, $0.02 x402) applies the same discipline and then places a real swap.</p>
     </section>
 
     <section class="card">
       <h2>Services</h2>
       <div class="services">
-        <div class="svc"><div><div class="svc-name">Execute a conviction</div><div class="svc-desc">Resolve, apply discipline, place a real OKX DEX swap on X Layer, return the fill</div></div><div class="svc-price">$0.05 · x402 exact</div></div>
+        <div class="svc"><div><div class="svc-name">Execute a conviction</div><div class="svc-desc">Resolve, apply discipline, place a real OKX DEX swap on X Layer, return the fill</div></div><div class="svc-price">$0.02 · x402 exact</div></div>
         <div class="svc"><div><div class="svc-name">Resolve and preview</div><div class="svc-desc">Read the live quote, show the edge and the exact order the desk would place</div></div><div class="svc-price">$0.01 · x402 exact</div></div>
         <div class="svc"><div><div class="svc-name">Recent executions</div><div class="svc-desc">The desk's filled swaps with prices and tx hashes</div></div><div class="svc-price">$0.01 · x402 exact</div></div>
         <div class="svc"><div><div class="svc-name">Standing execution mandate</div><div class="svc-desc">Enroll once; 10% revenue split to the signal partner whose convictions drive the desk</div></div><div class="svc-price">MPP · charge + split</div></div>
@@ -124,7 +124,7 @@
     <section class="card">
       <h2>How It Works</h2>
       <ol class="arch-steps">
-        <li><span>A research agent forms a conviction and calls <code>POST /api/execute</code></span><span class="muted"> - paid $0.05 in USDt0 on X Layer over x402</span></li>
+        <li><span>A research agent forms a conviction and calls <code>POST /api/execute</code></span><span class="muted"> - paid $0.02 in USDt0 on X Layer over x402</span></li>
         <li><span>Oddsmith resolves the asset on X Layer and reads the live OKX DEX quote</span><span class="muted"> - by token symbol or address</span></li>
         <li><span>The discipline layer decides: never buy above your ceiling, gate on real edge, size under hard caps</span><span class="muted"> - refuses rather than fires on any doubt</span></li>
         <li><span>It swaps USDt0 into the conviction on the OKX DEX aggregator and returns the fill</span><span class="muted"> - real on-chain tx, settled in OKB gas</span></li>
@@ -173,7 +173,7 @@
     errorEl.textContent = '';
     resultEl.classList.remove('show');
     runBtn.disabled = true; runBtn.textContent = 'Resolving...';
-    var body = { asset: (assetEl.value || 'OKB').trim(), maxPrice: parseFloat(maxEl.value) || undefined, amountUsd: 2 };
+    var body = { asset: (assetEl.value || 'OKB').trim(), maxPrice: parseFloat(maxEl.value) || undefined, amountUsd: 1 };
     fetch('/api/demo/resolve', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (res) {

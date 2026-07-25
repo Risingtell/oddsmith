@@ -21,8 +21,11 @@ export const config = {
   },
 
   /** Hard risk ceilings (USD). An order above either is refused, never trimmed silently. */
-  maxStakePerTradeUsd: num("MAX_STAKE_PER_TRADE_USD", 5),
-  maxStakePerDayUsd: num("MAX_STAKE_PER_DAY_USD", 25),
+  // Sized so the desk's book funds many real executions rather than a few large
+  // ones: on X Layer a $0.25 swap quotes within 0.1% of a $5 swap, so a small cap
+  // costs nothing in execution quality and buys far more on-chain evidence.
+  maxStakePerTradeUsd: num("MAX_STAKE_PER_TRADE_USD", 1),
+  maxStakePerDayUsd: num("MAX_STAKE_PER_DAY_USD", 5),
 
   /** Default and maximum swap slippage tolerance (percent). A request above the max is refused. */
   defaultSlippagePercent: num("DEFAULT_SLIPPAGE_PERCENT", 1),

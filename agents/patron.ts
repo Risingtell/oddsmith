@@ -20,7 +20,7 @@ import { OddsmithClient, type Conviction } from "../src/sdk/index.js";
 const ODDSMITH_URL = (process.env.ODDSMITH_URL ?? "http://localhost:4000").replace(/\/+$/, "");
 const ASSET = process.env.PATRON_ASSET ?? "OKB";
 const SIGNAL_ID = process.env.PATRON_SIGNAL_ID ?? "okb"; // CoinGecko id for the momentum read
-const STAKE = Number(process.env.PATRON_STAKE_USD ?? 2);
+const STAKE = Number(process.env.PATRON_STAKE_USD ?? 1);
 const CONFIRM = process.env.PATRON_CONFIRM === "true";
 
 interface Signal {

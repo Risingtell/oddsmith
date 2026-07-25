@@ -98,12 +98,12 @@ export async function mandateEnrollHandler(req: ExReq, res: ExRes): Promise<void
 /** Pay-per-execution channel: deposit once, then fire executions against off-chain vouchers. */
 export async function deskSessionHandler(req: ExReq, res: ExRes): Promise<void> {
   const sessionOpts = {
-    amount: "50000", // unit price: 0.05 USDt0 per execution
+    amount: "20000", // unit price: 0.02 USDt0 per execution - matches /api/execute
     currency: USDT0,
     recipient: process.env.PAY_TO!,
     description: "Oddsmith desk - per-execution channel",
     unitType: "execution",
-    suggestedDeposit: "500000", // ~10 executions
+    suggestedDeposit: "200000", // ~10 executions
     methodDetails: {
       chainId: CHAIN_ID,
       escrowContract: ESCROW,

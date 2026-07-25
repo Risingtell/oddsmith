@@ -3,7 +3,7 @@
  * into a real on-chain position in one call.
  *
  *   const desk = new OddsmithClient({ privateKey, baseUrl });
- *   const fill = await desk.execute({ coin: "BTC", outcome: "up", amountUsd: 2, confirm: true });
+ *   const fill = await desk.execute({ asset: "OKB", amountUsd: 1, maxPrice: 90, confirm: true });
  *
  * It handles the x402 payment handshake (USDt0 on X Layer) transparently — the
  * caller never touches the payment wire, just states the conviction and gets the

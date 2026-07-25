@@ -50,7 +50,7 @@ Every feature maps to a named OKX capability:
 
 | Route | Payment | What it does |
 |---|---|---|
-| `POST /api/execute` | x402 exact $0.05 | Resolve, apply discipline, place a real OKX DEX swap, return the fill |
+| `POST /api/execute` | x402 exact $0.02 | Resolve, apply discipline, place a real OKX DEX swap, return the fill |
 | `POST /api/resolve` | x402 exact $0.01 | Resolve and show the live quote, edge, and recommended order (no swap) |
 | `POST /api/positions` | x402 exact $0.01 | The desk's recent executions with prices and tx hashes |
 | `POST /api/mandate` | MPP charge + split | Enroll a standing execution mandate |
@@ -61,7 +61,7 @@ Every feature maps to a named OKX capability:
 Request shape for `execute` and `resolve`:
 
 ```json
-{ "asset": "OKB", "amountUsd": 5, "maxPrice": 1.2, "fairValue": 1.5, "slippagePercent": 1, "confirm": true }
+{ "asset": "OKB", "amountUsd": 1, "maxPrice": 90, "fairValue": 95, "slippagePercent": 1, "confirm": true }
 ```
 
 `asset` is a token symbol or 0x address on X Layer. The desk swaps USDt0 into it.
@@ -72,7 +72,7 @@ Request shape for `execute` and `resolve`:
 import { OddsmithClient } from "@oddsmith/sdk";
 
 const desk = new OddsmithClient({ privateKey, baseUrl: "https://oddsmith.onrender.com" });
-const fill = await desk.execute({ asset: "OKB", amountUsd: 2, maxPrice: 1.2, confirm: true });
+const fill = await desk.execute({ asset: "OKB", amountUsd: 1, maxPrice: 90, confirm: true });
 ```
 
 ## Verify on-chain

@@ -21,9 +21,9 @@ services:
       - key: EXECUTION_MODE
         value: paper
       - key: MAX_STAKE_PER_TRADE_USD
-        value: "5"
+        value: "1"
       - key: MAX_STAKE_PER_DAY_USD
-        value: "25"
+        value: "5"
       - key: DEFAULT_SLIPPAGE_PERCENT
         value: "1"
       - key: MAX_SLIPPAGE_PERCENT
