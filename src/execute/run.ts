@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { config } from "../config.js";
 import { decide, type Conviction, type Decision, type QuoteView } from "./discipline.js";
 import { saveExecution, spentTodayUsd } from "../store.js";
-import { deployedTodayUsd } from "../chain/fills.js";
+import { deployedTodayUsd, invalidateFills } from "../chain/fills.js";
 import { deskAddress, executeSwap, quote, resolveToken, type TokenInfo } from "./okxdex.js";
 
 /**
@@ -29,7 +29,8 @@ async function spentToday(strict: boolean): Promise<number> {
   const desk = deskAddress();
   if (!desk) return spentTodayUsd();
   try {
-    return await deployedTodayUsd(desk as `0x${string}`);
+    // A ceiling must never be judged against a cached total.
+    return await deployedTodayUsd(desk as `0x${string}`, { fresh: strict });
   } catch (e) {
     if (strict) throw new Error(`cannot establish today's deployed stake, refusing to execute: ${(e as Error).message}`);
     return spentTodayUsd();
@@ -153,6 +154,7 @@ export async function runExecution(req: ExecuteRequest): Promise<ExecutionReport
 
   try {
     const swap = await executeSwap(token, order.amountUsd, order.slippagePercent);
+    invalidateFills(); // this fill counts against the daily ceiling immediately
     const report: ExecutionReport = {
       ...baseReport, mode: "live", filled: swap.status === "success",
       status: swap.status === "success" ? "filled" : "reverted",

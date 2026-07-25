@@ -57,8 +57,15 @@ export async function scanTransfers(
       }
       start = end + 1n;
       chunk = CHUNK;
-    } catch {
-      if (chunk <= 100n) break;
+    } catch (e) {
+      // Never return a short answer as if it were the whole history. A partial
+      // scan silently under-reports revenue, hides fills a buyer paid to see,
+      // and - worst - makes the daily stake ceiling fail OPEN by undercounting
+      // what the desk already deployed. Callers must be able to tell the
+      // difference between "nothing happened" and "we could not find out".
+      if (chunk <= 100n) {
+        throw new Error(`chain scan incomplete at block ${start}: ${(e as Error).message.split("\n")[0]}`);
+      }
       chunk = chunk / 2n < 100n ? 100n : chunk / 2n;
     }
   }
@@ -75,16 +82,28 @@ export interface OnChainFill {
   at?: string;
 }
 
-let cache: { at: number; fills: OnChainFill[] } | null = null;
+let cache: { at: number; desk: string; fills: OnChainFill[] } | null = null;
 const TTL_MS = 15_000;
 const blockTime = new Map<string, number>();
 
-/** Every real fill the desk has placed, newest last. Cached briefly - it is a paid route. */
-export async function listDeskFills(desk: Address): Promise<OnChainFill[]> {
-  if (cache && Date.now() - cache.at < TTL_MS) return cache.fills;
+/** Drop the cached view - called right after a fill so the next read sees it. */
+export function invalidateFills(): void {
+  cache = null;
+}
+
+/**
+ * Every real fill the desk has placed, newest last.
+ *
+ * Cached briefly because the positions route is paid and judges may hammer it.
+ * `fresh` skips the cache: any read that a risk limit depends on must not be
+ * allowed to see a stale total, or two executions inside the cache window both
+ * pass a ceiling that only one of them should have.
+ */
+export async function listDeskFills(desk: Address, opts: { fresh?: boolean } = {}): Promise<OnChainFill[]> {
+  if (!opts.fresh && cache && cache.desk === desk && Date.now() - cache.at < TTL_MS) return cache.fills;
   const spends = await scanTransfers({ from: desk });
   const fills = spends.map((s) => ({ txHash: s.txHash, block: s.block, amountUsd: s.usd }));
-  cache = { at: Date.now(), fills };
+  cache = { at: Date.now(), desk, fills };
   return fills;
 }
 
@@ -96,8 +115,8 @@ export async function listDeskFills(desk: Address): Promise<OnChainFill[]> {
  * anything appearing to go wrong. Throws rather than guessing low - the caller is
  * expected to refuse the trade if today's exposure cannot be established.
  */
-export async function deployedTodayUsd(desk: Address): Promise<number> {
-  const fills = await listDeskFills(desk);
+export async function deployedTodayUsd(desk: Address, opts: { fresh?: boolean } = {}): Promise<number> {
+  const fills = await listDeskFills(desk, opts);
   const today = new Date().toISOString().slice(0, 10);
   let total = 0;
   for (const fill of fills) {
