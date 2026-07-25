@@ -13,7 +13,28 @@ import { randomUUID } from "node:crypto";
 import { config } from "../config.js";
 import { decide, type Conviction, type Decision, type QuoteView } from "./discipline.js";
 import { saveExecution, spentTodayUsd } from "../store.js";
+import { deployedTodayUsd } from "../chain/fills.js";
 import { deskAddress, executeSwap, quote, resolveToken, type TokenInfo } from "./okxdex.js";
+
+/**
+ * Today's deployed stake, for the daily ceiling.
+ *
+ * `strict` is the difference between a preview and real money. Before an actual
+ * swap the figure must come from the chain, and a trade is refused outright if it
+ * cannot be established - a ceiling that fails open is not a ceiling. A preview
+ * moves nothing, so it degrades to the local log rather than showing every visitor
+ * a refusal because an RPC blinked.
+ */
+async function spentToday(strict: boolean): Promise<number> {
+  const desk = deskAddress();
+  if (!desk) return spentTodayUsd();
+  try {
+    return await deployedTodayUsd(desk as `0x${string}`);
+  } catch (e) {
+    if (strict) throw new Error(`cannot establish today's deployed stake, refusing to execute: ${(e as Error).message}`);
+    return spentTodayUsd();
+  }
+}
 
 export interface ExecuteRequest {
   /** Asset to buy into: a token symbol (e.g. "OKB") or a 0x address on X Layer. */
@@ -71,7 +92,7 @@ export async function previewExecution(req: ExecuteRequest): Promise<PreviewRepo
   const amountUsd = typeof req.amountUsd === "number" && Number.isFinite(req.amountUsd) ? req.amountUsd : 1;
   const { token, view } = await resolveAndQuote({ ...req, amountUsd });
   const conviction: Conviction = { asset: token.symbol, amountUsd, maxPrice: req.maxPrice, fairValue: req.fairValue, slippagePercent: req.slippagePercent };
-  const decision = decide(conviction, view, spentTodayUsd());
+  const decision = decide(conviction, view, await spentToday(false));
   return {
     at: new Date().toISOString(),
     asset: { symbol: token.symbol, address: token.address },
@@ -102,7 +123,7 @@ export async function runExecution(req: ExecuteRequest): Promise<ExecutionReport
     fairValue: req.fairValue,
     slippagePercent: req.slippagePercent,
   };
-  const decision: Decision = decide(conviction, view, spentTodayUsd());
+  const decision: Decision = decide(conviction, view, await spentToday(wantLive));
 
   const baseReport: ExecutionReport = {
     id, at, mode: wantLive ? "live" : "paper", filled: false, status: "held",

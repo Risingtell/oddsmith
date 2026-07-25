@@ -28,6 +28,7 @@ import { UptoEvmScheme } from "@okxweb3/x402-evm/upto/server";
 import { config } from "./config.js";
 import { runExecution, previewExecution, deskAddress, ExecuteRequestError, type ExecuteRequest } from "./execute/run.js";
 import { listExecutions } from "./store.js";
+import { listDeskFills } from "./chain/fills.js";
 import { mandateEnrollHandler, deskSessionHandler } from "./payments/mpp.js";
 import { rateLimited } from "./demo/rateLimit.js";
 
@@ -210,9 +211,23 @@ app.post("/api/resolve", async (req, res) => {
   }
 });
 
-app.post("/api/positions", (_req, res) => {
-  const fills = listExecutions().filter((e) => e.filled);
-  res.json({ deskWallet: deskAddress(), count: fills.length, executions: fills.slice(-25) });
+app.post("/api/positions", async (_req, res) => {
+  // Read the fills back from X Layer, not from this host's log: the desk may run
+  // on an ephemeral filesystem, and a buyer paying for execution history must get
+  // the real record rather than whatever survived the last restart.
+  const desk = deskAddress();
+  if (!desk) return res.status(503).json({ error: "desk wallet not configured" });
+  try {
+    const fills = await listDeskFills(desk as `0x${string}`);
+    const local = new Map(listExecutions().filter((e) => e.fill?.txHash).map((e) => [e.fill!.txHash.toLowerCase(), e]));
+    const executions = fills.map((f) => {
+      const detail = local.get(f.txHash.toLowerCase());
+      return detail ? { ...f, asset: detail.asset?.symbol, price: detail.fill?.price, at: detail.at } : f;
+    });
+    res.json({ deskWallet: desk, source: "x-layer chain data", count: executions.length, executions: executions.slice(-25) });
+  } catch (e) {
+    res.status(502).json({ error: `positions lookup failed: ${(e as Error).message}` });
+  }
 });
 
 app.post("/api/mandate", mandateEnrollHandler);

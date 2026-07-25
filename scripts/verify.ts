@@ -9,24 +9,17 @@
  * `npm run verify` and checks both against chain.
  */
 import "dotenv/config";
-import { createPublicClient, erc20Abi, formatUnits, getAddress, http, parseAbiItem } from "viem";
+import { erc20Abi, formatUnits, getAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
-import { publicClient, USDT0, xlayer } from "../src/chain/xlayer.js";
+import { publicClient, USDT0 } from "../src/chain/xlayer.js";
 import { listExecutions } from "../src/store.js";
+// Deliberately the same scanner the paid positions route uses. If the verifier
+// had its own copy, the two could drift and quietly disagree about what the desk
+// has done - the one contradiction a trust product cannot afford.
+import { scanTransfers, GENESIS_BLOCK } from "../src/chain/fills.js";
 
-const TRANSFER = parseAbiItem("event Transfer(address indexed from, address indexed to, uint256 value)");
-
-// Fixed anchor, not a sliding window: the block the treasury was created at, so
-// this scan always covers Oddsmith's ENTIRE history. A rolling lookback silently
-// drops the earliest settlements as time passes, and a judge re-deriving the
-// numbers would then see fewer than the site claims.
-const GENESIS_BLOCK = 66_199_800n;
 const FROM_OVERRIDE = process.env.VERIFY_FROM_BLOCK ? BigInt(process.env.VERIFY_FROM_BLOCK) : null;
-const CHUNK = BigInt(process.env.VERIFY_CHUNK ?? 10_000);
-
-// rpc.xlayer.tech caps eth_getLogs at 100 blocks; drpc allows 10k.
-const scanClient = createPublicClient({ chain: xlayer, transport: http(process.env.VERIFY_RPC ?? "https://xlayer.drpc.org") });
 
 const partner = process.env.SPLIT_PARTNER ? getAddress(process.env.SPLIT_PARTNER) : null;
 
@@ -70,40 +63,6 @@ async function resolveDesk(): Promise<`0x${string}` | null> {
   }
 }
 
-/** Chunked Transfer-log scan that backs off when the RPC refuses a wide range. */
-async function scanTransfers(
-  args: { to: `0x${string}` } | { from: `0x${string}` },
-  fromBlock: bigint,
-  toBlock: bigint,
-): Promise<Array<{ tx: string; from: string; to: string; usd: number; block: bigint }>> {
-  const rows: Array<{ tx: string; from: string; to: string; usd: number; block: bigint }> = [];
-  let start = fromBlock;
-  let chunk = CHUNK;
-  while (start <= toBlock) {
-    const end = start + chunk - 1n > toBlock ? toBlock : start + chunk - 1n;
-    try {
-      const logs = await scanClient.getLogs({ address: USDT0, event: TRANSFER, args, fromBlock: start, toBlock: end });
-      for (const log of logs) {
-        rows.push({
-          tx: log.transactionHash,
-          from: getAddress(log.args.from!),
-          to: getAddress(log.args.to!),
-          usd: Number(formatUnits(log.args.value!, 6)),
-          block: log.blockNumber,
-        });
-      }
-      start = end + 1n;
-      chunk = CHUNK;
-    } catch (e) {
-      if (chunk <= 100n) {
-        console.error(`  RPC refused 100-block ranges near ${start}: ${(e as Error).message.split("\n")[0]}`);
-        break;
-      }
-      chunk = chunk / 2n < 100n ? 100n : chunk / 2n;
-    }
-  }
-  return rows;
-}
 
 async function usdt0Balance(addr: `0x${string}`): Promise<string> {
   const bal = await publicClient.readContract({ address: USDT0, abi: erc20Abi, functionName: "balanceOf", args: [addr] });
@@ -148,7 +107,7 @@ async function main(): Promise<void> {
     const payers = new Set(rows.map((r) => r.from));
     console.log(`  ${rows.length} fee settlements  |  ${payers.size} distinct payers  |  $${total.toFixed(4)} USDt0`);
     for (const r of rows.slice(-20)) {
-      console.log(`   block ${r.block}  $${r.usd.toFixed(4).padStart(8)}  from ${r.from.slice(0, 10)}...  tx ${r.tx}`);
+      console.log(`   block ${r.block}  $${r.usd.toFixed(4).padStart(8)}  from ${r.from.slice(0, 10)}...  tx ${r.txHash}`);
     }
   }
 
@@ -168,10 +127,10 @@ async function main(): Promise<void> {
     } else {
       let confirmed = 0;
       for (const s of spends) {
-        const receipt = await publicClient.getTransactionReceipt({ hash: s.tx as `0x${string}` });
+        const receipt = await publicClient.getTransactionReceipt({ hash: s.txHash as `0x${string}` });
         const ok = receipt.status === "success";
         if (ok) confirmed++;
-        console.log(`   ${ok ? "OK " : "!! "} $${s.usd.toFixed(4).padStart(8)} deployed  block ${s.block}  tx ${s.tx}`);
+        console.log(`   ${ok ? "OK " : "!! "} $${s.usd.toFixed(4).padStart(8)} deployed  block ${s.block}  tx ${s.txHash}`);
       }
       const total = spends.reduce((sum, s) => sum + s.usd, 0);
       console.log(`  ${confirmed}/${spends.length} swap tx(s) confirmed on X Layer  |  $${total.toFixed(4)} USDt0 deployed`);
