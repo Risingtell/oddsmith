@@ -1,6 +1,6 @@
 /**
- * OddsmithClient — the consumable SDK any agent can use to turn a conviction
- * into a real prediction-market position in one call.
+ * OddsmithClient - the consumable SDK any agent can use to turn a conviction
+ * into a real on-chain position in one call.
  *
  *   const desk = new OddsmithClient({ privateKey, baseUrl });
  *   const fill = await desk.execute({ coin: "BTC", outcome: "up", amountUsd: 2, confirm: true });
@@ -20,21 +20,19 @@ export interface OddsmithConfig {
   rpcUrl?: string;
 }
 
-/** A conviction to execute — the same shape the /api/execute route accepts. */
+/** A conviction to execute - the same shape the /api/execute route accepts. */
 export interface Conviction {
-  /** Outcome to buy: up / down / yes / no, or a categorical label. */
-  outcome: string;
+  /** Asset to buy into: a token symbol (e.g. "OKB") or a 0x address on X Layer. */
+  asset: string;
+  /** USD stake (in USDt0) to deploy. */
   amountUsd: number;
-  /** One of these three selects the market (precedence: market > coin > thesis). */
-  market?: string;
-  coin?: string;
-  window?: string;
-  thesis?: string;
-  /** Never pay above this price (0-1). */
+  /** Never pay above this price (USDt0 per token). */
   maxPrice?: number;
-  /** Your own fair-value estimate (0-1) — drives the desk's edge check. */
-  fairProbability?: number;
-  /** Explicit go-ahead for a real on-chain fill (live mode). Omit for a preview. */
+  /** Your own fair-value estimate (USDt0 per token) - drives the desk's edge check. */
+  fairValue?: number;
+  /** Slippage tolerance (percent). Capped by the desk's maximum. */
+  slippagePercent?: number;
+  /** Explicit go-ahead for a real on-chain swap (live mode). Omit for a preview. */
   confirm?: boolean;
 }
 
@@ -75,8 +73,8 @@ export class OddsmithClient {
     return this.post<T>("/api/resolve", conviction);
   }
 
-  /** Current open positions with live PnL. */
-  positions<T = unknown>(address?: string): Promise<T> {
-    return this.post<T>("/api/positions", address ? { address } : {});
+  /** The desk's recent executions. */
+  positions<T = unknown>(): Promise<T> {
+    return this.post<T>("/api/positions", {});
   }
 }

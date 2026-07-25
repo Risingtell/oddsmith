@@ -1,157 +1,82 @@
 /**
- * Execution orchestrator — the full loop behind POST /api/execute.
+ * Execution orchestrator - the full loop behind POST /api/execute.
  *
- *   conviction  ->  resolve to a live market + outcome  ->  discipline check
- *               ->  (live + confirmed) real fill  |  (else) dry-run preview
+ *   conviction  ->  resolve asset + live OKX DEX quote  ->  discipline check
+ *               ->  (live + confirmed) real swap  |  (else) dry-run preview
  *
- * "No manual hop": the caller passes a thesis, a coin+window, or an explicit
- * market — Oddsmith finds the exact market, reads the live price, applies the
- * desk's discipline, and fires. It executes only what it is explicitly told to;
- * it never invents a position or gives unsolicited advice.
+ * "No manual hop": the caller states an asset and a stake; Oddsmith resolves the
+ * token on X Layer, reads the live quote, applies the desk's discipline, and
+ * fires a real swap on the OKX DEX aggregator. It executes only what it is
+ * explicitly told to; it never invents a position or gives unsolicited advice.
  */
 import { randomUUID } from "node:crypto";
 import { config } from "../config.js";
-import { decide, type Conviction, type Decision, type ResolvedLeg } from "./discipline.js";
+import { decide, type Conviction, type Decision, type QuoteView } from "./discipline.js";
 import { saveExecution, spentTodayUsd } from "../store.js";
-import {
-  buy,
-  checkAccess,
-  getMarket,
-  list5m,
-  listMarkets,
-  type AccessResult,
-  type BuyResult,
-} from "./polymarket.js";
+import { deskAddress, executeSwap, quote, resolveToken, type TokenInfo } from "./okxdex.js";
 
 export interface ExecuteRequest {
-  /** Explicit market: slug or 0x condition_id. Highest resolution precedence. */
-  market?: string;
-  /** 5-minute Up/Down market coin (BTC, ETH, SOL, XRP, BNB, DOGE, HYPE). */
-  coin?: string;
-  /** Time window for a recurring market. Currently "5m". */
-  window?: string;
-  /** Natural-language thesis, keyword-resolved to a market. Lowest precedence. */
-  thesis?: string;
-  /** Outcome to buy: yes / no / up / down, or a categorical label. */
-  outcome: string;
+  /** Asset to buy into: a token symbol (e.g. "OKB") or a 0x address on X Layer. */
+  asset: string;
+  /** USD stake (in USDt0) to deploy. */
   amountUsd: number;
+  /** Price ceiling in USDt0 per token. Never pay above it. */
   maxPrice?: number;
-  fairProbability?: number;
-  /** Caller's explicit go-ahead for a real on-chain fill. Live mode requires it. */
+  /** Your own fair-value estimate in USDt0 per token - drives the edge check. */
+  fairValue?: number;
+  /** Slippage tolerance (percent). Capped by the desk's maximum. */
+  slippagePercent?: number;
+  /** Caller's explicit go-ahead for a real on-chain swap. Live mode requires it. */
   confirm?: boolean;
-}
-
-export interface ResolvedMarket {
-  conditionId: string;
-  question: string;
-  slug?: string;
-  endDate?: string;
 }
 
 export interface ExecutionReport {
   id: string;
   at: string;
   mode: "live" | "paper";
-  /** true only when a real on-chain order was placed (never in paper mode). */
+  /** true only when a real on-chain swap settled (never in paper mode). */
   filled: boolean;
   status: string;
-  access: AccessResult | null;
-  market: ResolvedMarket | null;
+  asset: { symbol: string; address: string } | null;
+  quote: { price: number; toAmount: number } | null;
   decision: { approved: boolean; reason?: string; rationale?: string; edge: number | null };
-  order: { tokenId: string; outcome: string; amountUsd: number; price?: number; orderType: string } | null;
-  fill: { orderId?: string; shares?: number; limitPrice?: number; txHashes: string[] } | null;
-  strategyId: string;
+  order: { asset: string; amountUsd: number; slippagePercent: number; expectedPrice: number } | null;
+  fill: { txHash: string; block: string; toAmount: number; price: number } | null;
 }
 
 export class ExecuteRequestError extends Error {}
 
-/** Map a requested outcome label to a token id + live price from a market's tokens. */
-function pickLeg(
-  tokens: Array<{ outcome: string; token_id: string; price: number; best_ask?: number }>,
-  outcome: string,
-): ResolvedLeg | null {
-  const want = outcome.trim().toLowerCase();
-  const t = tokens.find((x) => x.outcome.trim().toLowerCase() === want);
-  if (!t) return null;
-  return { tokenId: t.token_id, outcome: t.outcome, price: t.price, bestAsk: t.best_ask };
-}
-
-async function resolve(req: ExecuteRequest): Promise<{ market: ResolvedMarket; leg: ResolvedLeg }> {
-  const outcome = req.outcome?.trim().toLowerCase();
-
-  // (a) 5-minute Up/Down coin market — resolve to the current accepting round.
-  if (req.coin && (req.window ?? "5m").toLowerCase() === "5m") {
-    const markets = await list5m(req.coin, 5);
-    const m = markets.find((x) => x.acceptingOrders) ?? markets[0];
-    if (!m) throw new ExecuteRequestError(`No 5-minute market found for ${req.coin}.`);
-    if (outcome !== "up" && outcome !== "down") {
-      throw new ExecuteRequestError(`5-minute markets take outcome "up" or "down", got "${req.outcome}".`);
-    }
-    const leg: ResolvedLeg =
-      outcome === "up"
-        ? { tokenId: m.upTokenId, outcome: "up", price: m.upPrice }
-        : { tokenId: m.downTokenId, outcome: "down", price: m.downPrice };
-    return { market: { conditionId: m.conditionId, question: m.question, slug: m.slug, endDate: m.endDateUtc }, leg };
-  }
-
-  // (b) Explicit market by slug / condition_id.
-  if (req.market) {
-    const detail = await getMarket(req.market);
-    const leg = pickLeg(detail.tokens, req.outcome);
-    if (!leg) {
-      throw new ExecuteRequestError(
-        `Outcome "${req.outcome}" not found in market. Available: ${detail.tokens.map((t) => t.outcome).join(", ")}.`,
-      );
-    }
-    return { market: { conditionId: detail.condition_id, question: detail.question, endDate: detail.end_date }, leg };
-  }
-
-  // (c) Natural-language thesis — keyword resolve, then read the book.
-  if (req.thesis) {
-    const hits = await listMarkets(req.thesis, 5);
-    const top = hits.find((h) => h.accepting_orders) ?? hits[0];
-    if (!top) throw new ExecuteRequestError(`No market matched thesis: "${req.thesis}".`);
-    const detail = await getMarket(top.condition_id ?? top.slug);
-    const leg = pickLeg(detail.tokens, req.outcome);
-    if (!leg) {
-      throw new ExecuteRequestError(
-        `Resolved "${top.question}" but outcome "${req.outcome}" not found. Available: ${detail.tokens.map((t) => t.outcome).join(", ")}.`,
-      );
-    }
-    return { market: { conditionId: detail.condition_id, question: detail.question, slug: top.slug, endDate: detail.end_date }, leg };
-  }
-
-  throw new ExecuteRequestError("Provide one of: market, coin (+window), or thesis.");
+async function resolveAndQuote(req: ExecuteRequest): Promise<{ token: TokenInfo; view: QuoteView }> {
+  const token = await resolveToken(req.asset);
+  const amountUsd = req.amountUsd > 0 ? req.amountUsd : 1;
+  const q = await quote(token, amountUsd);
+  return { token, view: { price: q.price, toAmount: q.toAmount } };
 }
 
 export interface PreviewReport {
   at: string;
-  market: ResolvedMarket;
-  outcome: string;
-  marketPrice: number;
+  asset: { symbol: string; address: string };
+  price: number;
+  toAmount: number;
   decision: { approved: boolean; reason?: string; rationale?: string; edge: number | null };
-  recommendedOrder: { tokenId: string; outcome: string; amountUsd: number; price?: number; orderType: string } | null;
+  recommendedOrder: { asset: string; amountUsd: number; slippagePercent: number; expectedPrice: number } | null;
 }
 
 /**
- * Resolve + discipline WITHOUT executing — the read behind /api/resolve and the
- * free demo. Shows the exact market, the live price, and what the desk would do,
- * so a caller (or a judge) sees the decision before any money moves.
+ * Resolve + discipline WITHOUT executing - the read behind /api/resolve and the
+ * free demo. Shows the asset, the live quote, and what the desk would do.
  */
 export async function previewExecution(req: ExecuteRequest): Promise<PreviewReport> {
-  if (!req.outcome || typeof req.outcome !== "string") throw new ExecuteRequestError("outcome is required.");
+  if (!req.asset || typeof req.asset !== "string") throw new ExecuteRequestError("asset is required.");
   const amountUsd = typeof req.amountUsd === "number" && Number.isFinite(req.amountUsd) ? req.amountUsd : 1;
-  const { market, leg } = await resolve(req);
-  const decision = decide(
-    { outcome: leg.outcome, amountUsd, maxPrice: req.maxPrice, fairProbability: req.fairProbability },
-    leg,
-    spentTodayUsd(),
-  );
+  const { token, view } = await resolveAndQuote({ ...req, amountUsd });
+  const conviction: Conviction = { asset: token.symbol, amountUsd, maxPrice: req.maxPrice, fairValue: req.fairValue, slippagePercent: req.slippagePercent };
+  const decision = decide(conviction, view, spentTodayUsd());
   return {
     at: new Date().toISOString(),
-    market,
-    outcome: leg.outcome,
-    marketPrice: leg.price,
+    asset: { symbol: token.symbol, address: token.address },
+    price: view.price,
+    toAmount: view.toAmount,
     decision: decision.approved
       ? { approved: true, rationale: decision.rationale, edge: decision.edge }
       : { approved: false, reason: decision.reason, edge: decision.edge },
@@ -160,7 +85,7 @@ export async function previewExecution(req: ExecuteRequest): Promise<PreviewRepo
 }
 
 export async function runExecution(req: ExecuteRequest): Promise<ExecutionReport> {
-  if (!req.outcome || typeof req.outcome !== "string") throw new ExecuteRequestError("outcome is required.");
+  if (!req.asset || typeof req.asset !== "string") throw new ExecuteRequestError("asset is required.");
   if (typeof req.amountUsd !== "number" || !Number.isFinite(req.amountUsd)) {
     throw new ExecuteRequestError("amountUsd must be a number.");
   }
@@ -169,86 +94,63 @@ export async function runExecution(req: ExecuteRequest): Promise<ExecutionReport
   const at = new Date().toISOString();
   const wantLive = config.live && req.confirm === true;
 
-  // Region gate — never execute a real fill from a restricted region.
-  let access: AccessResult | null = null;
-  if (wantLive) {
-    access = await checkAccess().catch(() => ({ accessible: null, warning: "check-access unreachable" }) as AccessResult);
-    if (access.accessible === false) {
-      const report: ExecutionReport = {
-        id, at, mode: "live", filled: false, status: "blocked_region", access,
-        market: null, decision: { approved: false, reason: `Region restricted (${access.country ?? "unknown"}) — execution refused.`, edge: null },
-        order: null, fill: null, strategyId: config.strategyId,
-      };
-      saveExecution(report);
-      return report;
-    }
-  }
-
-  const { market, leg } = await resolve(req);
-
+  const { token, view } = await resolveAndQuote(req);
   const conviction: Conviction = {
-    outcome: leg.outcome,
+    asset: token.symbol,
     amountUsd: req.amountUsd,
     maxPrice: req.maxPrice,
-    fairProbability: req.fairProbability,
+    fairValue: req.fairValue,
+    slippagePercent: req.slippagePercent,
   };
-  const decision: Decision = decide(conviction, leg, spentTodayUsd());
+  const decision: Decision = decide(conviction, view, spentTodayUsd());
+
+  const baseReport: ExecutionReport = {
+    id, at, mode: wantLive ? "live" : "paper", filled: false, status: "held",
+    asset: { symbol: token.symbol, address: token.address },
+    quote: { price: view.price, toAmount: view.toAmount },
+    decision: { approved: false, edge: decision.edge },
+    order: null, fill: null,
+  };
 
   if (!decision.approved) {
-    const report: ExecutionReport = {
-      id, at, mode: wantLive ? "live" : "paper", filled: false, status: "held",
-      access, market, decision: { approved: false, reason: decision.reason, edge: decision.edge },
-      order: null, fill: null, strategyId: config.strategyId,
-    };
+    const report = { ...baseReport, decision: { approved: false, reason: decision.reason, edge: decision.edge } };
     saveExecution(report);
     return report;
   }
 
   const { order } = decision;
-  const dryRun = !wantLive;
-  let buyResult: BuyResult;
-  try {
-    buyResult = await buy({
-      tokenId: order.tokenId,
-      outcome: order.outcome,
-      amountUsd: order.amountUsd,
-      price: order.price,
-      orderType: order.orderType,
-      dryRun,
-    });
-  } catch (e) {
-    const msg = (e as { message?: string }).message ?? String(e);
+
+  if (!wantLive) {
     const report: ExecutionReport = {
-      id, at, mode: dryRun ? "paper" : "live", filled: false, status: "execution_error",
-      access, market,
+      ...baseReport, mode: "paper", status: "preview",
       decision: { approved: true, rationale: decision.rationale, edge: decision.edge },
-      order: { ...order }, fill: null, strategyId: config.strategyId,
+      order: { ...order }, fill: null,
     };
     saveExecution(report);
-    // Surface the underlying reason without pretending a fill happened.
-    (report as ExecutionReport & { error?: string }).error = msg;
     return report;
   }
 
-  const txHashes = Array.isArray(buyResult.tx_hashes) ? buyResult.tx_hashes : [];
-  const filled = !dryRun && txHashes.length > 0;
-
-  const report: ExecutionReport = {
-    id, at,
-    mode: dryRun ? "paper" : "live",
-    filled,
-    status: dryRun ? "preview" : (buyResult.status ?? (filled ? "matched" : "submitted")),
-    access, market,
-    decision: { approved: true, rationale: decision.rationale, edge: decision.edge },
-    order: { ...order },
-    fill: {
-      orderId: buyResult.order_id,
-      shares: typeof buyResult.shares === "number" ? buyResult.shares : undefined,
-      limitPrice: typeof buyResult.limit_price === "number" ? buyResult.limit_price : order.price,
-      txHashes,
-    },
-    strategyId: config.strategyId,
-  };
-  saveExecution(report);
-  return report;
+  try {
+    const swap = await executeSwap(token, order.amountUsd, order.slippagePercent);
+    const report: ExecutionReport = {
+      ...baseReport, mode: "live", filled: swap.status === "success",
+      status: swap.status === "success" ? "filled" : "reverted",
+      decision: { approved: true, rationale: decision.rationale, edge: decision.edge },
+      order: { ...order },
+      fill: { txHash: swap.txHash, block: swap.block, toAmount: swap.toAmount, price: swap.price },
+    };
+    saveExecution(report);
+    return report;
+  } catch (e) {
+    const report: ExecutionReport = {
+      ...baseReport, mode: "live", status: "execution_error",
+      decision: { approved: true, rationale: decision.rationale, edge: decision.edge },
+      order: { ...order }, fill: null,
+    };
+    (report as ExecutionReport & { error?: string }).error = (e as Error).message;
+    saveExecution(report);
+    return report;
+  }
 }
+
+export { deskAddress };

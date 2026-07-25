@@ -1,20 +1,18 @@
-# Render blueprint — deploys Oddsmith as a persistent web service.
+# Render blueprint - deploys Oddsmith as a persistent web service on the free plan.
 #
-# region: frankfurt is deliberate. Polymarket geoblocks US/OFAC IPs, so the desk
-# must run from a non-US region or check-access fails and no fill can execute.
+# Oddsmith is native to X Layer: the service fee settles in USDt0 via x402, and
+# execution is a real swap on the OKX DEX aggregator (X Layer). There is no
+# external chain and no runtime binary - just Node + viem + signed OKX API calls -
+# so hosting is unconstrained and no region requirement applies.
 #
-# The service shells out to two OKX binaries at runtime (onchainos + the official
-# polymarket-plugin); render-build.sh installs them. Read paths (resolve, the free
-# demo) need only the plugin binary; live execution also needs onchainos logged
-# into a funded Polygon (137) wallet (see README). EXECUTION_MODE defaults to
-# "paper" so a fresh deploy never places a real order until you flip it.
+# EXECUTION_MODE defaults to "paper" so a fresh deploy never places a real swap
+# until you flip it. Set the secrets in the Render dashboard; never commit them.
 services:
   - type: web
     name: oddsmith
     runtime: node
-    region: frankfurt
-    plan: starter
-    buildCommand: bash scripts/render-build.sh
+    plan: free
+    buildCommand: npm install && npm run build
     startCommand: npm start
     healthCheckPath: /healthz
     envVars:
@@ -22,24 +20,17 @@ services:
         value: "22"
       - key: EXECUTION_MODE
         value: paper
-      - key: STRATEGY_ID
-        value: oddsmith
       - key: MAX_STAKE_PER_TRADE_USD
         value: "5"
       - key: MAX_STAKE_PER_DAY_USD
         value: "25"
-      - key: DEFAULT_MAX_PRICE
-        value: "0.97"
+      - key: DEFAULT_SLIPPAGE_PERCENT
+        value: "1"
+      - key: MAX_SLIPPAGE_PERCENT
+        value: "3"
       - key: XLAYER_RPC
         value: https://rpc.xlayer.tech
-      - key: POLYGON_RPC
-        value: https://polygon-rpc.com
-      # Absolute paths so the runtime finds the binaries render-build.sh installs.
-      - key: ONCHAINOS_BIN
-        value: /opt/render/.local/bin/onchainos
-      - key: POLYMARKET_BIN
-        value: /opt/render/.local/bin/polymarket-plugin
-      # Secrets — set in the Render dashboard, never commit.
+      # Secrets - set in the Render dashboard, never commit.
       - key: OKX_API_KEY
         sync: false
       - key: OKX_SECRET_KEY
@@ -55,4 +46,6 @@ services:
       - key: SPLIT_PARTNER
         sync: false
       - key: BUYER_PRIVATE_KEY
+        sync: false
+      - key: EXECUTION_PRIVATE_KEY
         sync: false

@@ -1,7 +1,7 @@
 {
   "name": "oddsmith",
   "version": "0.1.0",
-  "description": "The execution desk for prediction-market agents. Turns an agent's conviction into a disciplined, real Polymarket fill, paid per call in USDt0 on X Layer via the OKX Agent Payments Protocol.",
+  "description": "The execution desk for on-chain trading agents. Turns an agent's conviction into a disciplined, real OKX DEX swap on X Layer, paid per call in USDt0 via the OKX Agent Payments Protocol.",
   "type": "module",
   "license": "MIT",
   "scripts": {

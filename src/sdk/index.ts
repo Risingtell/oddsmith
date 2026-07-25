@@ -1,6 +1,6 @@
 /**
- * @oddsmith/sdk — turn a conviction into a real prediction-market position in
- * one call, paid per execution in USDt0 on X Layer.
+ * @oddsmith/sdk - turn a conviction into a real on-chain position in one call,
+ * executed on the OKX DEX aggregator and paid per execution in USDt0 on X Layer.
  */
 export { OddsmithClient } from "./client.js";
 export type { OddsmithConfig, Conviction } from "./client.js";

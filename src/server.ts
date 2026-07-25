@@ -1,15 +1,15 @@
 /**
- * Oddsmith — the execution desk for prediction-market agents.
+ * Oddsmith - the execution desk for on-chain trading agents, native to X Layer.
  *
- * Your research agent has the conviction; Oddsmith pulls the trigger. It takes a
- * thesis (or a specific market + outcome), resolves it to a live Polymarket
- * market, applies the desk's discipline (never chase, size under hard caps),
- * fires a real on-chain fill, and returns the position with proof.
+ * Your research agent has the conviction; Oddsmith pulls the trigger. It takes an
+ * asset and a stake, reads the live OKX DEX quote on X Layer, applies the desk's
+ * discipline (never chase, size under hard caps), and fires a real swap - USDt0
+ * into the conviction, settled in OKB gas. Nothing leaves the OKX ecosystem.
  *
  * Payment surfaces (settled in USDt0 on X Layer, eip155:196, via OKX APP):
- *   POST /api/execute    x402 exact   $0.05   resolve + discipline + real fill
- *   POST /api/resolve    x402 exact   $0.01   resolve + odds + what the desk would do (no fill)
- *   POST /api/positions  x402 exact   $0.01   open positions + live PnL
+ *   POST /api/execute    x402 exact   $0.05   resolve + discipline + real swap
+ *   POST /api/resolve    x402 exact   $0.01   resolve + live quote + what the desk would do
+ *   POST /api/positions  x402 exact   $0.01   the desk's recent executions
  *   POST /api/mandate    MPP charge+split     standing execution mandate
  *   POST /session/desk   MPP session          pay-per-execution channel
  */
@@ -26,8 +26,8 @@ import {
 import { ExactEvmScheme } from "@okxweb3/x402-evm/exact/server";
 import { UptoEvmScheme } from "@okxweb3/x402-evm/upto/server";
 import { config } from "./config.js";
-import { runExecution, previewExecution, ExecuteRequestError, type ExecuteRequest } from "./execute/run.js";
-import { getPositions } from "./execute/polymarket.js";
+import { runExecution, previewExecution, deskAddress, ExecuteRequestError, type ExecuteRequest } from "./execute/run.js";
+import { listExecutions } from "./store.js";
 import { mandateEnrollHandler, deskSessionHandler } from "./payments/mpp.js";
 import { rateLimited } from "./demo/rateLimit.js";
 
@@ -35,7 +35,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = Number(process.env.PORT ?? 4000);
 const PAY_TO = process.env.PAY_TO ?? "0x0000000000000000000000000000000000000000";
-const NETWORK = "eip155:196" as const; // X Layer mainnet — the only supported network
+const NETWORK = "eip155:196" as const; // X Layer mainnet - the only supported network
 
 const facilitatorClient = new OKXFacilitatorClient({
   apiKey: process.env.OKX_API_KEY!,
@@ -49,9 +49,6 @@ const resourceServer = new x402ResourceServer(facilitatorClient)
   .register(NETWORK, new ExactEvmScheme())
   .register(NETWORK, new UptoEvmScheme());
 
-// Mirror the deterministic PaymentRequired object into the JSON body as well as
-// the header — some client SDKs read the challenge from the body to complete the
-// replay handshake. (Same fix Argus's OKX review required.)
 function mirrorChallengeInBody(
   accepts: { scheme: string; network: typeof NETWORK; payTo: string; price: string; maxTimeoutSeconds: number },
   description: string,
@@ -73,17 +70,15 @@ const resolveAccepts = { scheme: "exact", network: NETWORK, payTo: PAY_TO, price
 const positionsAccepts = { scheme: "exact", network: NETWORK, payTo: PAY_TO, price: "$0.01", maxTimeoutSeconds: 300 };
 
 const EXECUTE_DESCRIPTION =
-  "Execute a prediction-market conviction as a disciplined, real Polymarket fill. " +
-  'Body: {"outcome":"up|down|yes|no", "amountUsd":5, ' +
-  'one of: "coin":"BTC" (5-minute Up/Down) | "market":"<slug-or-0x-conditionId>" | "thesis":"<keyword>", ' +
-  'optional "maxPrice":0.6, "fairProbability":0.7, "confirm":true}. ' +
-  "The desk refuses to buy above maxPrice (never chases) and enforces hard per-trade/daily stake caps. " +
-  "A real on-chain fill needs confirm:true and the service in live mode; otherwise returns a dry-run preview.";
+  "Execute a trading conviction as a disciplined, real swap on the OKX DEX aggregator (X Layer). " +
+  'Body: {"asset":"OKB", "amountUsd":5, optional "maxPrice":1.2, "fairValue":1.5, "slippagePercent":1, "confirm":true}. ' +
+  "asset is a token symbol or 0x address on X Layer; the desk swaps USDt0 into it. " +
+  "It refuses to buy above maxPrice (never chases) and enforces hard per-trade/daily stake caps. " +
+  "A real on-chain swap needs confirm:true and the service in live mode; otherwise returns a dry-run preview.";
 const RESOLVE_DESCRIPTION =
-  "Resolve a conviction to a live market and show what the desk would do, without executing. " +
-  'Body: same as /api/execute (outcome + one of coin/market/thesis). Returns the resolved market, live price, edge, and the recommended order.';
-const POSITIONS_DESCRIPTION =
-  'Open Polymarket positions with live PnL for the desk wallet. Body: {} or {"address":"0x..."}.';
+  "Resolve a conviction to a live OKX DEX quote and show what the desk would do, without executing. " +
+  'Body: {"asset":"OKB", "amountUsd":5, optional "maxPrice", "fairValue", "slippagePercent"}. Returns the token, live price, edge, and recommended order.';
+const POSITIONS_DESCRIPTION = "The desk's recent executions (asset, stake, price, tx). Body: {}.";
 
 const httpServer = new x402HTTPResourceServer(resourceServer, {
   "POST /api/execute": {
@@ -98,8 +93,7 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
     accepts: resolveAccepts,
     unpaidResponseBody: mirrorChallengeInBody(resolveAccepts, RESOLVE_DESCRIPTION, "application/json"),
   },
-  // Marketplace validators (OKX's x402-check) probe an unpaid GET before a paid
-  // POST — answer the same 402 challenge on GET so the probe passes.
+  // OKX's x402-check probes an unpaid GET before a paid POST - answer the same 402.
   "GET /api/execute": {
     description: EXECUTE_DESCRIPTION,
     mimeType: "application/json",
@@ -125,7 +119,7 @@ async function initWithRetry(): Promise<void> {
     try {
       await httpServer.initialize();
       paymentsReady = true;
-      console.log(`Facilitator ready — paid surfaces live on X Layer (${NETWORK}).`);
+      console.log(`Facilitator ready - paid surfaces live on X Layer (${NETWORK}).`);
       return;
     } catch (e) {
       const wait = Math.min(60_000, 2_000 * attempt);
@@ -137,27 +131,27 @@ async function initWithRetry(): Promise<void> {
 
 process.on("unhandledRejection", (reason) => console.error("unhandledRejection:", reason));
 
-// Free discovery route — also the URL the marketplace listing points at.
 app.get("/", (_req, res) =>
   res.json({
     name: "Oddsmith",
-    tagline: "The execution desk for prediction-market agents",
+    tagline: "The execution desk for on-chain trading agents",
     paymentsReady,
     executionMode: config.executionMode,
+    deskWallet: deskAddress(),
     surfaces: {
-      execute: `POST /api/execute — $0.05 x402/exact — ${EXECUTE_DESCRIPTION}`,
-      resolve: `POST /api/resolve — $0.01 x402/exact — ${RESOLVE_DESCRIPTION}`,
-      positions: `POST /api/positions — $0.01 x402/exact — ${POSITIONS_DESCRIPTION}`,
-      mandate: "POST /api/mandate — MPP charge+split — enroll a standing execution mandate",
-      desk: "POST /session/desk — MPP session — pay-per-execution channel",
+      execute: `POST /api/execute - $0.05 x402/exact - ${EXECUTE_DESCRIPTION}`,
+      resolve: `POST /api/resolve - $0.01 x402/exact - ${RESOLVE_DESCRIPTION}`,
+      positions: `POST /api/positions - $0.01 x402/exact - ${POSITIONS_DESCRIPTION}`,
+      mandate: "POST /api/mandate - MPP charge+split - enroll a standing execution mandate",
+      desk: "POST /session/desk - MPP session - pay-per-execution channel",
     },
     protocols: ["x402: exact, upto", "MPP: charge (+splits), session"],
-    venue: "Polymarket (Polygon, chain 137)",
-    settlement: "service fee in USDt0 on X Layer (eip155:196)",
+    venue: "OKX DEX aggregator (X Layer, eip155:196)",
+    settlement: "USDt0 on X Layer, OKB gas - fully native to the OKX ecosystem",
     risk: {
       maxStakePerTradeUsd: config.maxStakePerTradeUsd,
       maxStakePerDayUsd: config.maxStakePerDayUsd,
-      neverBuyAbovePrice: config.defaultMaxPrice,
+      maxSlippagePercent: config.maxSlippagePercent,
     },
   }),
 );
@@ -166,19 +160,18 @@ app.get("/healthz", (_req, res) => res.json({ ok: true, paymentsReady, execution
 
 app.get("/site", (_req, res) => res.sendFile(path.join(__dirname, "../public/site.html")));
 
-// Free, rate-limited demo — resolve a live 5-minute market and show what the
-// desk would do. No payment, no wallet, no facilitator dependency.
+// Free, rate-limited demo - resolve a real asset quote and show what the desk
+// would do. No payment, no wallet, no facilitator dependency.
 app.post("/api/demo/resolve", async (req, res) => {
   const key = req.ip ?? "unknown";
-  if (rateLimited(key)) return res.status(429).json({ error: "Rate limited — try again in a minute." });
+  if (rateLimited(key)) return res.status(429).json({ error: "Rate limited - try again in a minute." });
   const body = (req.body ?? {}) as ExecuteRequest;
   const demoReq: ExecuteRequest = {
-    coin: body.coin ?? "BTC",
-    window: "5m",
-    outcome: body.outcome ?? "up",
-    amountUsd: typeof body.amountUsd === "number" ? body.amountUsd : 1,
+    asset: body.asset ?? "OKB",
+    amountUsd: typeof body.amountUsd === "number" ? body.amountUsd : 2,
     maxPrice: body.maxPrice,
-    fairProbability: body.fairProbability,
+    fairValue: body.fairValue,
+    slippagePercent: body.slippagePercent,
   };
   try {
     res.json(await previewExecution(demoReq));
@@ -188,10 +181,9 @@ app.post("/api/demo/resolve", async (req, res) => {
   }
 });
 
-// Guard paid POSTs until the facilitator has loaded.
 app.use((req, res, next) => {
   if (!paymentsReady && req.method === "POST") {
-    return res.status(503).json({ error: "payment facilitator initializing — retry shortly", paymentsReady });
+    return res.status(503).json({ error: "payment facilitator initializing - retry shortly", paymentsReady });
   }
   next();
 });
@@ -218,20 +210,15 @@ app.post("/api/resolve", async (req, res) => {
   }
 });
 
-app.post("/api/positions", async (req, res) => {
-  const { address } = (req.body ?? {}) as { address?: string };
-  try {
-    res.json({ positions: await getPositions(address) });
-  } catch (e) {
-    res.status(502).json({ error: `positions failed: ${(e as Error).message}` });
-  }
+app.post("/api/positions", (_req, res) => {
+  const fills = listExecutions().filter((e) => e.filled);
+  res.json({ deskWallet: deskAddress(), count: fills.length, executions: fills.slice(-25) });
 });
 
-// MPP-gated routes (self-handle their own 402).
 app.post("/api/mandate", mandateEnrollHandler);
 app.post("/session/desk", deskSessionHandler);
 
 app.listen(PORT, () => {
-  console.log(`Oddsmith desk on :${PORT} — discovery live, warming facilitator (${NETWORK})…`);
+  console.log(`Oddsmith desk on :${PORT} - discovery live, warming facilitator (${NETWORK})...`);
   void initWithRetry();
 });

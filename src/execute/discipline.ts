@@ -1,64 +1,57 @@
 /**
- * The execution desk's discipline layer — the difference between Oddsmith and a
- * thin "place this order" wrapper.
+ * The execution desk's discipline layer - the difference between Oddsmith and a
+ * thin "swap this now" wrapper.
  *
- * A conviction arrives with a stake and (optionally) the caller's own fair-value
- * estimate. Before anything is signed, this decides whether the trade is worth
- * making at the *current* market price, and sizes it inside hard risk ceilings.
- * Every rule fails closed: on any doubt it refuses rather than fires.
+ * A conviction arrives with a stake and, optionally, the caller's price ceiling
+ * and fair-value estimate. Before anything is signed, this decides whether the
+ * trade is worth making at the *current* quoted price, and checks it against hard
+ * risk ceilings. Every rule fails closed: on any doubt it refuses.
  */
 import { config } from "../config.js";
 
 export interface Conviction {
-  /** Outcome to buy: yes / no / up / down, or a categorical label. */
-  outcome: string;
+  /** The asset to buy into (symbol or address), for reporting. */
+  asset: string;
   /** USD stake requested. Capped by config.maxStakePerTradeUsd. */
   amountUsd: number;
-  /** Caller's price ceiling (0-1). Never pay above it. Defaults to config.defaultMaxPrice. */
+  /** Price ceiling in USDt0 per token. Never pay above it. Optional. */
   maxPrice?: number;
-  /** Caller's own probability estimate (0-1). If given, drives the edge check. */
-  fairProbability?: number;
+  /** Caller's fair-value estimate in USDt0 per token. If given, drives the edge check. */
+  fairValue?: number;
+  /** Requested slippage tolerance (percent). Capped by config.maxSlippagePercent. */
+  slippagePercent?: number;
 }
 
-export interface ResolvedLeg {
-  tokenId: string;
-  outcome: string;
-  /** Current best executable price for this outcome (0-1). */
+export interface QuoteView {
+  /** Current quoted price in USDt0 per token. */
   price: number;
-  /** Best ask, if known — used to pick order type. */
-  bestAsk?: number;
+  /** Target-token units the stake would buy at that price. */
+  toAmount: number;
 }
 
 export interface Order {
-  tokenId: string;
-  outcome: string;
+  asset: string;
   amountUsd: number;
-  /** Limit price (0-1) when a resting/limit order is chosen; omit for a market (FOK) order. */
-  price?: number;
-  orderType: "GTC" | "FOK";
+  slippagePercent: number;
+  /** The quoted price this order was approved against. */
+  expectedPrice: number;
 }
 
 export type Decision =
   | { approved: true; order: Order; edge: number | null; rationale: string }
   | { approved: false; reason: string; edge: number | null };
 
-/** Round a probability to the CLOB's 2-decimal price grid without ever rounding UP past the ceiling. */
-function floorToCent(p: number): number {
-  return Math.floor(p * 100) / 100;
-}
-
 /**
  * Decide whether to execute, and how.
  *
- * @param spentTodayUsd cumulative stake already deployed today (for the daily cap).
+ * @param spentTodayUsd cumulative stake already deployed live today (for the daily cap).
  */
-export function decide(conviction: Conviction, leg: ResolvedLeg, spentTodayUsd: number): Decision {
+export function decide(conviction: Conviction, q: QuoteView, spentTodayUsd: number): Decision {
   const { amountUsd } = conviction;
-  const ceiling = Math.min(conviction.maxPrice ?? config.defaultMaxPrice, config.defaultMaxPrice);
+  const slippage = conviction.slippagePercent ?? config.defaultSlippagePercent;
+  const edge = conviction.fairValue != null ? conviction.fairValue - q.price : null;
 
-  const edge = conviction.fairProbability != null ? conviction.fairProbability - leg.price : null;
-
-  // 1. Stake sanity + per-trade ceiling. Never silently trim — refuse and say so.
+  // 1. Stake sanity + per-trade ceiling. Never silently trim - refuse and say so.
   if (!(amountUsd > 0)) {
     return { approved: false, reason: "Stake must be greater than zero.", edge };
   }
@@ -79,47 +72,38 @@ export function decide(conviction: Conviction, leg: ResolvedLeg, spentTodayUsd: 
     };
   }
 
-  // 3. Never chase: refuse if the outcome is already priced above the ceiling.
-  if (leg.price > ceiling) {
+  // 3. Slippage ceiling.
+  if (slippage > config.maxSlippagePercent) {
     return {
       approved: false,
-      reason: `${leg.outcome} is trading at ${leg.price.toFixed(3)}, above the ${ceiling.toFixed(3)} ceiling — the move is already priced in, no edge left to capture.`,
+      reason: `Requested slippage ${slippage}% exceeds the ${config.maxSlippagePercent}% ceiling.`,
       edge,
     };
   }
 
-  // 4. Edge gate (only when the caller supplied a fair-value estimate).
+  // 4. Never chase: refuse if the asset is already trading above your price ceiling.
+  if (conviction.maxPrice != null && q.price > conviction.maxPrice) {
+    return {
+      approved: false,
+      reason: `${conviction.asset} is quoting ${q.price.toFixed(6)} USDt0, above your ${conviction.maxPrice.toFixed(6)} ceiling - the move is already priced in, no edge left to capture.`,
+      edge,
+    };
+  }
+
+  // 5. Edge gate (only when the caller supplied a fair value).
   if (edge != null && edge <= 0) {
     return {
       approved: false,
-      reason: `Your fair value ${conviction.fairProbability!.toFixed(3)} is at or below the market price ${leg.price.toFixed(3)} — no positive edge, so the desk holds.`,
+      reason: `Your fair value ${conviction.fairValue!.toFixed(6)} is at or below the quoted price ${q.price.toFixed(6)} - no positive edge, so the desk holds.`,
       edge,
     };
   }
 
-  // 5. Order-type selection.
-  //    - A price ceiling => resting limit at the ceiling (controls slippage, captures the edge).
-  //    - No ceiling + small size => FOK market order (immediate fill).
-  //    - No ceiling + larger size => refuse; a blind market order at size invites slippage.
-  let order: Order;
-  if (conviction.maxPrice != null) {
-    order = { tokenId: leg.tokenId, outcome: leg.outcome, amountUsd, price: floorToCent(ceiling), orderType: "GTC" };
-  } else if (amountUsd <= 10) {
-    order = { tokenId: leg.tokenId, outcome: leg.outcome, amountUsd, orderType: "FOK" };
-  } else {
-    return {
-      approved: false,
-      reason: `No price ceiling given for a $${amountUsd.toFixed(2)} order — set maxPrice to place a limit; the desk will not fire a blind market order at that size.`,
-      edge,
-    };
-  }
-
-  const edgeNote = edge != null ? ` (edge ${(edge * 100).toFixed(1)} pts vs market ${leg.price.toFixed(3)})` : ` at market ${leg.price.toFixed(3)}`;
-  const typeNote = order.price != null ? `limit ${order.price.toFixed(2)}` : "market (FOK)";
+  const edgeNote = edge != null ? ` (edge ${edge.toFixed(6)} USDt0/token vs quote ${q.price.toFixed(6)})` : ` at quote ${q.price.toFixed(6)}`;
   return {
     approved: true,
-    order,
+    order: { asset: conviction.asset, amountUsd, slippagePercent: slippage, expectedPrice: q.price },
     edge,
-    rationale: `Buy ${leg.outcome} $${amountUsd.toFixed(2)} as ${typeNote}${edgeNote}.`,
+    rationale: `Buy ${conviction.asset} with $${amountUsd.toFixed(2)} USDt0 at ${slippage}% slippage${edgeNote}.`,
   };
 }
