@@ -14,11 +14,17 @@ const TRANSFER = parseAbiItem("event Transfer(address indexed from, address inde
 /** First block that can contain Oddsmith activity - the desk wallet's creation. */
 export const GENESIS_BLOCK = 66_199_800n;
 
-// rpc.xlayer.tech caps eth_getLogs at 100 blocks; drpc allows 10k.
-const scanClient = createPublicClient({ chain: xlayer, transport: http(process.env.VERIFY_RPC ?? "https://xlayer.drpc.org") });
+// drpc.org's free tier now hard-rejects eth_getLogs outright ("upgrade to paid
+// plan"), so rpc.xlayer.tech is the default - but it caps every call at 100
+// blocks. This scan runs synchronously inside POST /api/execute (the daily
+// stake ceiling must be read fresh before any real swap), so it has to finish
+// in seconds, not minutes: CONCURRENCY runs many 100-block calls in parallel
+// rather than walking ~150k+ blocks one 100-block window at a time.
+const scanClient = createPublicClient({ chain: xlayer, transport: http(process.env.VERIFY_RPC ?? "https://rpc.xlayer.tech") });
 const readClient = createPublicClient({ chain: xlayer, transport: http() });
 
-const CHUNK = BigInt(process.env.VERIFY_CHUNK ?? 10_000);
+const CHUNK = BigInt(process.env.VERIFY_CHUNK ?? 100);
+const CONCURRENCY = Number(process.env.VERIFY_CONCURRENCY ?? 15);
 
 export interface Transfer {
   txHash: string;
@@ -40,35 +46,59 @@ export async function scanTransfers(
 ): Promise<Transfer[]> {
   const latest = toBlock ?? (await readClient.getBlockNumber());
   const rows: Transfer[] = [];
-  let start = fromBlock;
-  let chunk = CHUNK;
-  while (start <= latest) {
-    const end = start + chunk - 1n > latest ? latest : start + chunk - 1n;
-    try {
-      const logs = await scanClient.getLogs({ address: USDT0, event: TRANSFER, args, fromBlock: start, toBlock: end });
-      for (const log of logs) {
-        rows.push({
-          txHash: log.transactionHash,
-          from: getAddress(log.args.from!),
-          to: getAddress(log.args.to!),
-          usd: Number(formatUnits(log.args.value!, 6)),
-          block: log.blockNumber.toString(),
-        });
+
+  // Explicit work queue of 100-block windows, so CONCURRENCY workers can pull
+  // from it at once instead of walking the range one window at a time.
+  const ranges: Array<[bigint, bigint]> = [];
+  for (let s = fromBlock; s <= latest; s += CHUNK) {
+    const e = s + CHUNK - 1n > latest ? latest : s + CHUNK - 1n;
+    ranges.push([s, e]);
+  }
+
+  let nextIdx = 0;
+  const RETRIES = 5;
+
+  async function worker(): Promise<void> {
+    while (nextIdx < ranges.length) {
+      const i = nextIdx++;
+      const [start, end] = ranges[i];
+      let lastErr: unknown;
+      for (let attempt = 0; attempt < RETRIES; attempt++) {
+        try {
+          const logs = await scanClient.getLogs({ address: USDT0, event: TRANSFER, args, fromBlock: start, toBlock: end });
+          for (const log of logs) {
+            rows.push({
+              txHash: log.transactionHash,
+              from: getAddress(log.args.from!),
+              to: getAddress(log.args.to!),
+              usd: Number(formatUnits(log.args.value!, 6)),
+              block: log.blockNumber.toString(),
+            });
+          }
+          lastErr = undefined;
+          break;
+        } catch (e) {
+          lastErr = e;
+          // Sustained concurrent load hits this RPC's rate limit occasionally
+          // even at a modest CONCURRENCY, so back off longer than a one-off
+          // network blip would need before the final attempt gives up.
+          if (attempt < RETRIES - 1) await new Promise((r) => setTimeout(r, 500 * (attempt + 1) * (attempt + 1)));
+        }
       }
-      start = end + 1n;
-      chunk = CHUNK;
-    } catch (e) {
-      // Never return a short answer as if it were the whole history. A partial
-      // scan silently under-reports revenue, hides fills a buyer paid to see,
-      // and - worst - makes the daily stake ceiling fail OPEN by undercounting
-      // what the desk already deployed. Callers must be able to tell the
-      // difference between "nothing happened" and "we could not find out".
-      if (chunk <= 100n) {
-        throw new Error(`chain scan incomplete at block ${start}: ${(e as Error).message.split("\n")[0]}`);
+      if (lastErr) {
+        // Never return a short answer as if it were the whole history. A partial
+        // scan silently under-reports revenue, hides fills a buyer paid to see,
+        // and - worst - makes the daily stake ceiling fail OPEN by undercounting
+        // what the desk already deployed. Callers must be able to tell the
+        // difference between "nothing happened" and "we could not find out",
+        // so a range that never comes back throws rather than being skipped.
+        throw new Error(`chain scan incomplete at block ${start}: ${(lastErr as Error).message.split("\n")[0]}`);
       }
-      chunk = chunk / 2n < 100n ? 100n : chunk / 2n;
     }
   }
+
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, ranges.length) }, worker));
+  rows.sort((a, b) => (BigInt(a.block) < BigInt(b.block) ? -1 : BigInt(a.block) > BigInt(b.block) ? 1 : 0));
   return rows;
 }
 
