@@ -94,6 +94,14 @@ npm run dev            # desk on :4000
 npm run patron         # autonomous research -> execution demo
 ```
 
+On Windows PowerShell, if `npm` fails with "running scripts is disabled on this system", run the same commands through `npm.cmd`:
+
+```powershell
+npm.cmd run dev
+npm.cmd run patron
+npm.cmd run verify
+```
+
 ## Live execution setup
 
 Read paths (`resolve`, the free demo) need only the OKX API creds. Live swaps additionally require the desk wallet (`EXECUTION_PRIVATE_KEY`) funded with USDt0 and a little OKB for gas on X Layer, and `EXECUTION_MODE=live`. Until then the desk runs in paper mode and returns dry-run previews.

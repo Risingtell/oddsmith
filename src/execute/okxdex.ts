@@ -17,19 +17,23 @@ import { config } from "../config.js";
 
 const BASE = process.env.OKX_BASE_URL ?? "https://web3.okx.com";
 const CHAIN = "196"; // X Layer
+const OKX_TIMEOUT_MS = Number(process.env.OKX_TIMEOUT_MS ?? 12_000);
 
 /** HMAC-signed GET against the OKX DEX API (query string is part of the signature). */
 async function signedGet<T = any>(path: string): Promise<T> {
   const ts = new Date().toISOString();
   const sign = crypto.createHmac("sha256", process.env.OKX_SECRET_KEY!).update(ts + "GET" + path).digest("base64");
+  const headers: Record<string, string> = {
+    "OK-ACCESS-KEY": process.env.OKX_API_KEY!,
+    "OK-ACCESS-SIGN": sign,
+    "OK-ACCESS-TIMESTAMP": ts,
+    "OK-ACCESS-PASSPHRASE": process.env.OKX_PASSPHRASE!,
+    "Content-Type": "application/json",
+  };
+  if (process.env.OKX_PROJECT_ID) headers["OK-ACCESS-PROJECT"] = process.env.OKX_PROJECT_ID;
   const res = await fetch(BASE + path, {
-    headers: {
-      "OK-ACCESS-KEY": process.env.OKX_API_KEY!,
-      "OK-ACCESS-SIGN": sign,
-      "OK-ACCESS-TIMESTAMP": ts,
-      "OK-ACCESS-PASSPHRASE": process.env.OKX_PASSPHRASE!,
-      "Content-Type": "application/json",
-    },
+    headers,
+    signal: AbortSignal.timeout(OKX_TIMEOUT_MS),
   });
   return (await res.json()) as T;
 }

@@ -22,10 +22,12 @@ import { deskAddress, executeSwap, quote, resolveToken, type TokenInfo } from ".
  * `strict` is the difference between a preview and real money. Before an actual
  * swap the figure must come from the chain, and a trade is refused outright if it
  * cannot be established - a ceiling that fails open is not a ceiling. A preview
- * moves nothing, so it degrades to the local log rather than showing every visitor
- * a refusal because an RPC blinked.
+ * moves nothing, so it uses the local log and stays fast enough for the public
+ * demo even when historical RPC scans are slow.
  */
 async function spentToday(strict: boolean): Promise<number> {
+  if (!strict) return spentTodayUsd();
+
   const desk = deskAddress();
   if (!desk) return spentTodayUsd();
   // DEMO_SKIP_FRESH_STAKE_CHECK: trust the local execution log instead of a fresh
