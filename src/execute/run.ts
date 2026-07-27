@@ -28,21 +28,27 @@ import { deskAddress, executeSwap, quote, resolveToken, type TokenInfo } from ".
 async function spentToday(strict: boolean): Promise<number> {
   if (!strict) return spentTodayUsd();
 
-  const desk = deskAddress();
-  if (!desk) return spentTodayUsd();
-  // DEMO_SKIP_FRESH_STAKE_CHECK: trust the local execution log instead of a fresh
-  // on-chain rescan. Explicit opt-in, unset by default - the fresh chain read is
-  // the safer check and stays the default. Reasonable to flip on only when the
+  // DEMO_SKIP_FRESH_STAKE_CHECK: trust the local execution log directly, with NO
+  // on-chain call at all. Explicit opt-in, unset by default - the fresh chain read
+  // is the safer check and stays the default. Reasonable to flip on only when the
   // local log is known to already be an accurate count (e.g. this desk has no
   // real fills yet) and a live host's outbound network makes the fresh scan
   // unreliable enough to block real executions outright.
-  if (strict && process.env.DEMO_SKIP_FRESH_STAKE_CHECK === "true") strict = false;
+  //
+  // Earlier version of this only relaxed `fresh` to false and still called
+  // deployedTodayUsd, which - on a cold cache - falls through to listDeskFills's
+  // full genesis-to-now scan: the exact same rate-limited RPC call this flag
+  // exists to avoid, just reached by a slower path. Returning here instead means
+  // zero RPC calls, guaranteed.
+  if (process.env.DEMO_SKIP_FRESH_STAKE_CHECK === "true") return spentTodayUsd();
+
+  const desk = deskAddress();
+  if (!desk) return spentTodayUsd();
   try {
     // A ceiling must never be judged against a cached total.
-    return await deployedTodayUsd(desk as `0x${string}`, { fresh: strict });
+    return await deployedTodayUsd(desk as `0x${string}`, { fresh: true });
   } catch (e) {
-    if (strict) throw new Error(`cannot establish today's deployed stake, refusing to execute: ${(e as Error).message}`);
-    return spentTodayUsd();
+    throw new Error(`cannot establish today's deployed stake, refusing to execute: ${(e as Error).message}`);
   }
 }
 
