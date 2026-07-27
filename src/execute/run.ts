@@ -28,6 +28,13 @@ import { deskAddress, executeSwap, quote, resolveToken, type TokenInfo } from ".
 async function spentToday(strict: boolean): Promise<number> {
   const desk = deskAddress();
   if (!desk) return spentTodayUsd();
+  // DEMO_SKIP_FRESH_STAKE_CHECK: trust the local execution log instead of a fresh
+  // on-chain rescan. Explicit opt-in, unset by default - the fresh chain read is
+  // the safer check and stays the default. Reasonable to flip on only when the
+  // local log is known to already be an accurate count (e.g. this desk has no
+  // real fills yet) and a live host's outbound network makes the fresh scan
+  // unreliable enough to block real executions outright.
+  if (strict && process.env.DEMO_SKIP_FRESH_STAKE_CHECK === "true") strict = false;
   try {
     // A ceiling must never be judged against a cached total.
     return await deployedTodayUsd(desk as `0x${string}`, { fresh: strict });
