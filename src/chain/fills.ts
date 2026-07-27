@@ -15,12 +15,15 @@ const TRANSFER = parseAbiItem("event Transfer(address indexed from, address inde
 export const GENESIS_BLOCK = 66_199_800n;
 
 // drpc.org's free tier now hard-rejects eth_getLogs outright ("upgrade to paid
-// plan"), so rpc.xlayer.tech is the default - but it caps every call at 100
-// blocks. This scan runs synchronously inside POST /api/execute (the daily
-// stake ceiling must be read fresh before any real swap), so it has to finish
-// in seconds, not minutes: CONCURRENCY runs many 100-block calls in parallel
-// rather than walking ~150k+ blocks one 100-block window at a time.
-const scanClient = createPublicClient({ chain: xlayer, transport: http(process.env.VERIFY_RPC ?? "https://rpc.xlayer.tech") });
+// plan"). rpc.xlayer.tech works but caps every call at 100 blocks *and* rate-
+// limits far more aggressively from Render's shared IP pool than from a normal
+// connection - confirmed via the underlying RpcRequestError (cause code -32016
+// "over rate limit"), reproducible on Render even after cutting the scan down
+// to a same-day block window. xlayerrpc.okx.com is OKX's own official endpoint,
+// same 100-block cap, different provider/pool - the default now, in case
+// Render's exhaustion is specific to the third-party host rather than to this
+// server's own request volume.
+const scanClient = createPublicClient({ chain: xlayer, transport: http(process.env.VERIFY_RPC ?? "https://xlayerrpc.okx.com") });
 const readClient = createPublicClient({ chain: xlayer, transport: http() });
 
 const CHUNK = BigInt(process.env.VERIFY_CHUNK ?? 100);
