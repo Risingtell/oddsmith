@@ -24,7 +24,7 @@ const scanClient = createPublicClient({ chain: xlayer, transport: http(process.e
 const readClient = createPublicClient({ chain: xlayer, transport: http() });
 
 const CHUNK = BigInt(process.env.VERIFY_CHUNK ?? 100);
-const CONCURRENCY = Number(process.env.VERIFY_CONCURRENCY ?? 15);
+const CONCURRENCY = Number(process.env.VERIFY_CONCURRENCY ?? 5);
 
 export interface Transfer {
   txHash: string;
@@ -56,7 +56,7 @@ export async function scanTransfers(
   }
 
   let nextIdx = 0;
-  const RETRIES = 5;
+  const RETRIES = 7;
 
   async function worker(): Promise<void> {
     while (nextIdx < ranges.length) {
@@ -92,6 +92,17 @@ export async function scanTransfers(
         // what the desk already deployed. Callers must be able to tell the
         // difference between "nothing happened" and "we could not find out",
         // so a range that never comes back throws rather than being skipped.
+        // Logged in full server-side (name/status/cause), not just the one-line
+        // message that reaches the HTTP caller, so a real cause (rate limit vs
+        // block vs DNS) is diagnosable from Render's logs instead of guessed at.
+        const err = lastErr as Error & { status?: number; cause?: unknown; shortMessage?: string };
+        console.error("scanTransfers giving up on range", start.toString(), "-", end.toString(), {
+          name: err.name,
+          message: err.message,
+          shortMessage: err.shortMessage,
+          status: err.status,
+          cause: err.cause,
+        });
         throw new Error(`chain scan incomplete at block ${start}: ${(lastErr as Error).message.split("\n")[0]}`);
       }
     }
@@ -137,6 +148,26 @@ export async function listDeskFills(desk: Address, opts: { fresh?: boolean } = {
   return fills;
 }
 
+// X Layer produces one block per second (confirmed empirically: block 66_200_000 and
+// block 66_350_000 are exactly 150_000 seconds apart on-chain, and 66_200_000 to
+// 66_280_000 is exactly 80_000 seconds - both spans matched to the second). That makes
+// "today" computable directly from block numbers instead of scanning from genesis.
+const SECONDS_PER_BLOCK = 1;
+// ~20 minutes of extra margin behind the estimate, to absorb any drift in the
+// 1-block-per-second assumption without ever starting the scan too late - starting
+// early just costs a slightly larger scan, starting late risks under-counting today's
+// spend, which is the one outcome this ceiling exists to prevent.
+const SAFETY_MARGIN_BLOCKS = 1_200n;
+
+async function todayFromBlock(): Promise<bigint> {
+  const latest = await readClient.getBlock();
+  const latestTs = Number(latest.timestamp);
+  const utcMidnight = Math.floor(latestTs / 86_400) * 86_400;
+  const blocksSinceMidnight = BigInt(Math.floor((latestTs - utcMidnight) / SECONDS_PER_BLOCK));
+  const estimate = latest.number - blocksSinceMidnight - SAFETY_MARGIN_BLOCKS;
+  return estimate < GENESIS_BLOCK ? GENESIS_BLOCK : estimate;
+}
+
 /**
  * Stake the desk has actually deployed today (UTC), derived from block timestamps.
  *
@@ -144,9 +175,22 @@ export async function listDeskFills(desk: Address, opts: { fresh?: boolean } = {
  * resets whenever the host restarts, which would let the cap be exceeded without
  * anything appearing to go wrong. Throws rather than guessing low - the caller is
  * expected to refuse the trade if today's exposure cannot be established.
+ *
+ * A `fresh` read only needs today's transfers, so it scans from an estimated
+ * start-of-day block rather than genesis: re-scanning the desk's entire history on
+ * every real execute doesn't scale and needlessly hammers the RPC's rate limit. The
+ * cached, non-fresh path (previews, the positions view) still uses the full-history
+ * scan, since it isn't gating real money and benefits from the existing TTL cache.
  */
 export async function deployedTodayUsd(desk: Address, opts: { fresh?: boolean } = {}): Promise<number> {
-  const fills = await listDeskFills(desk, opts);
+  let fills: OnChainFill[];
+  if (opts.fresh) {
+    const from = await todayFromBlock();
+    const spends = await scanTransfers({ from: desk }, from);
+    fills = spends.map((s) => ({ txHash: s.txHash, block: s.block, amountUsd: s.usd }));
+  } else {
+    fills = await listDeskFills(desk, opts);
+  }
   const today = new Date().toISOString().slice(0, 10);
   let total = 0;
   for (const fill of fills) {
