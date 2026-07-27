@@ -10,7 +10,7 @@
  * router if needed, then sends the aggregator's calldata.
  */
 import crypto from "node:crypto";
-import { createPublicClient, createWalletClient, erc20Abi, formatUnits, http, type Hex } from "viem";
+import { createPublicClient, createWalletClient, encodeFunctionData, erc20Abi, formatUnits, http, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { xlayer, USDT0 } from "../chain/xlayer.js";
 import { config } from "../config.js";
@@ -112,19 +112,16 @@ export async function executeSwap(token: TokenInfo, amountUsd: number, slippageP
   const wallet = createWalletClient({ account, chain: xlayer, transport: http() });
   const amountAtomic = BigInt(Math.round(amountUsd * 1e6)).toString();
 
-  // 1) Approve the OKX router to spend USDt0, if allowance is short.
-  const appr = await signedGet<{ code: string; data?: any[] }>(
-    `/api/v6/dex/aggregator/approve-transaction?chainIndex=${CHAIN}&chainId=${CHAIN}&tokenContractAddress=${USDT0}&approveAmount=${amountAtomic}`,
-  );
-  if (appr.code !== "0" || !appr.data?.length) throw new Error(`approve quote failed: ${JSON.stringify(appr).slice(0, 200)}`);
-  const spender = appr.data[0].dexContractAddress as `0x${string}`;
-  const allowance = (await pub.readContract({ address: USDT0, abi: erc20Abi, functionName: "allowance", args: [account.address, spender] })) as bigint;
-  if (allowance < BigInt(amountAtomic)) {
-    const approveHash = await wallet.sendTransaction({ to: USDT0, data: appr.data[0].data as Hex });
-    await pub.waitForTransactionReceipt({ hash: approveHash });
-  }
-
-  // 2) Fetch swap calldata and send it.
+  // 1) Fetch the swap calldata FIRST. tx.to is the contract that will actually
+  //    call transferFrom on the input token - it is NOT guaranteed to be the same
+  //    address the separate /approve-transaction endpoint suggests. Confirmed by
+  //    direct reproduction: for a Uniswap V4 route on X Layer, approve-transaction
+  //    returned dexContractAddress 0x8b773D83bc66Be128c60e07E17C8901f7a64F000,
+  //    while the swap's own tx.to was 0x722db4f285F8bD91ef7AF6DA397e83f7fA4E80a7 -
+  //    two different contracts. Approving the first left the second (the one
+  //    actually used) at zero allowance, and every swap reverted with a generic
+  //    "Execution reverted for an unknown reason." Approving tx.to directly, with
+  //    our own standard ERC20 approve() call, removes the mismatch entirely.
   const swap = await signedGet<{ code: string; data?: any[] }>(
     `/api/v6/dex/aggregator/swap?chainIndex=${CHAIN}&chainId=${CHAIN}&amount=${amountAtomic}` +
       `&fromTokenAddress=${USDT0}&toTokenAddress=${token.address}&userWalletAddress=${account.address}&slippagePercent=${slippagePercent}`,
@@ -133,6 +130,15 @@ export async function executeSwap(token: TokenInfo, amountUsd: number, slippageP
   const tx = swap.data[0].tx;
   const toAmount = Number(formatUnits(BigInt(swap.data[0].routerResult?.toTokenAmount ?? "0"), token.decimals));
   const value = BigInt(tx.value ?? "0");
+  const spender = tx.to as `0x${string}`;
+
+  // 2) Approve that exact spender, if allowance is short.
+  const allowance = (await pub.readContract({ address: USDT0, abi: erc20Abi, functionName: "allowance", args: [account.address, spender] })) as bigint;
+  if (allowance < BigInt(amountAtomic)) {
+    const approveData = encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [spender, BigInt(amountAtomic)] });
+    const approveHash = await wallet.sendTransaction({ to: USDT0, data: approveData });
+    await pub.waitForTransactionReceipt({ hash: approveHash });
+  }
 
   // Do NOT trust the aggregator's suggested gas. Measured on X Layer it comes back
   // around 30% under what the swap actually needs (230,400 suggested against
