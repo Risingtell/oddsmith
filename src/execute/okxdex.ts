@@ -18,6 +18,12 @@ import { config } from "../config.js";
 const BASE = process.env.OKX_BASE_URL ?? "https://web3.okx.com";
 const CHAIN = "196"; // X Layer
 const OKX_TIMEOUT_MS = Number(process.env.OKX_TIMEOUT_MS ?? 12_000);
+/**
+ * OKX's TokenApprove contract on X Layer: the fixed address the DexRouter
+ * delegates transferFrom to, and therefore the only correct approval target.
+ * Used as a fallback when /approve-transaction cannot be reached.
+ */
+const TOKEN_APPROVE = "0x8b773D83bc66Be128c60e07E17C8901f7a64F000";
 
 /** HMAC-signed GET against the OKX DEX API (query string is part of the signature). */
 async function signedGet<T = any>(path: string): Promise<T> {
@@ -112,16 +118,20 @@ export async function executeSwap(token: TokenInfo, amountUsd: number, slippageP
   const wallet = createWalletClient({ account, chain: xlayer, transport: http() });
   const amountAtomic = BigInt(Math.round(amountUsd * 1e6)).toString();
 
-  // 1) Fetch the swap calldata FIRST. tx.to is the contract that will actually
-  //    call transferFrom on the input token - it is NOT guaranteed to be the same
-  //    address the separate /approve-transaction endpoint suggests. Confirmed by
-  //    direct reproduction: for a Uniswap V4 route on X Layer, approve-transaction
-  //    returned dexContractAddress 0x8b773D83bc66Be128c60e07E17C8901f7a64F000,
-  //    while the swap's own tx.to was 0x722db4f285F8bD91ef7AF6DA397e83f7fA4E80a7 -
-  //    two different contracts. Approving the first left the second (the one
-  //    actually used) at zero allowance, and every swap reverted with a generic
-  //    "Execution reverted for an unknown reason." Approving tx.to directly, with
-  //    our own standard ERC20 approve() call, removes the mismatch entirely.
+  // 1) Fetch the swap calldata. tx.to is the DexRouter entry point we SEND to, but
+  //    it is NOT the address that pulls our USDt0, so it must not be the approval
+  //    target. OKX's router does not call transferFrom itself: it delegates to a
+  //    fixed TokenApprove contract (0x8b773D83bc66Be128c60e07E17C8901f7a64F000),
+  //    which is what /approve-transaction returns as dexContractAddress.
+  //
+  //    An earlier commit (c580b92) approved tx.to instead, on the theory that a
+  //    spender mismatch was causing generic reverts. That was wrong and is what
+  //    actually broke the desk. Proven on-chain: the failing calls revert with
+  //    selector 0xf4059071 = SafeTransferFromFailed(), while the desk held 1.512
+  //    USDt0 (enough) with allowance 1000000 to tx.to and allowance 0 to
+  //    TokenApprove. The one swap that did succeed rode a leftover TokenApprove
+  //    allowance from the pre-c580b92 code and consumed it to zero, which is why
+  //    the failure looked intermittent. Approve TokenApprove, never tx.to.
   const swap = await signedGet<{ code: string; data?: any[] }>(
     `/api/v6/dex/aggregator/swap?chainIndex=${CHAIN}&chainId=${CHAIN}&amount=${amountAtomic}` +
       `&fromTokenAddress=${USDT0}&toTokenAddress=${token.address}&userWalletAddress=${account.address}&slippagePercent=${slippagePercent}`,
@@ -130,12 +140,36 @@ export async function executeSwap(token: TokenInfo, amountUsd: number, slippageP
   const tx = swap.data[0].tx;
   const toAmount = Number(formatUnits(BigInt(swap.data[0].routerResult?.toTokenAmount ?? "0"), token.decimals));
   const value = BigInt(tx.value ?? "0");
-  const spender = tx.to as `0x${string}`;
 
-  // 2) Approve that exact spender, if allowance is short.
+  // 2) Resolve the real spender from /approve-transaction, then approve it if the
+  //    allowance is short. Fall back to the known canonical TokenApprove address
+  //    if that call is unavailable, so a transient API failure cannot silently
+  //    send us back to approving the wrong contract.
+  const approveInfo = await signedGet<{ code: string; data?: any[] }>(
+    `/api/v6/dex/aggregator/approve-transaction?chainIndex=${CHAIN}&chainId=${CHAIN}` +
+      `&tokenContractAddress=${USDT0}&approveAmount=${amountAtomic}`,
+  );
+  const spender = ((approveInfo.code === "0" && approveInfo.data?.[0]?.dexContractAddress) || TOKEN_APPROVE) as `0x${string}`;
+
   const allowance = (await pub.readContract({ address: USDT0, abi: erc20Abi, functionName: "allowance", args: [account.address, spender] })) as bigint;
   if (allowance < BigInt(amountAtomic)) {
-    const approveData = encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [spender, BigInt(amountAtomic)] });
+    // USDT-family tokens reject a nonzero -> nonzero allowance change, so clear first.
+    if (allowance > 0n) {
+      const zeroHash = await wallet.sendTransaction({
+        to: USDT0,
+        data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [spender, 0n] }),
+      });
+      await pub.waitForTransactionReceipt({ hash: zeroHash });
+    }
+    // Approve the daily ceiling rather than this one trade, so a normal day of
+    // execution costs one approval instead of one per fill. The desk is a bounded
+    // hot wallet and the ceiling is the most it may ever deploy in a day anyway.
+    const approveAmount = BigInt(Math.round(config.maxStakePerDayUsd * 1e6));
+    const approveData = encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "approve",
+      args: [spender, approveAmount > BigInt(amountAtomic) ? approveAmount : BigInt(amountAtomic)],
+    });
     const approveHash = await wallet.sendTransaction({ to: USDT0, data: approveData });
     await pub.waitForTransactionReceipt({ hash: approveHash });
   }
