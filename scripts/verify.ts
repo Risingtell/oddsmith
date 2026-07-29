@@ -99,7 +99,22 @@ async function main(): Promise<void> {
   const latest = await publicClient.getBlockNumber();
   const from = FROM_OVERRIDE ?? GENESIS_BLOCK;
   console.log(`\n  [fees] scanning USDt0 transfers to treasury, blocks ${from}..${latest}`);
-  const rows = await scanTransfers({ to: treasury }, from, latest);
+  const allInflows = await scanTransfers({ to: treasury }, from, latest);
+
+  // Not every USDt0 transfer into the treasury is an Oddsmith service fee. The same
+  // address also receives sales from an unrelated storefront the owner runs, so
+  // counting raw inflows would overstate this service's revenue. Those transfers are
+  // listed explicitly below rather than silently dropped: the point of this script is
+  // that anyone can reconcile it against the chain, which means the exclusions have to
+  // be auditable too. Every tx here is a real payment, just not for this service.
+  const NON_SERVICE_INFLOWS = new Map<string, string>([
+    ["0xe1745c4b3ec4cc5c9e46d0c5b3edfc31202ec61b5141f31d11c36b35f6143a42", "storefront sale, not an Oddsmith fee"],
+    ["0xdb111c221ba61de3033bd7db446d58a451a782ca226ed09b68ce21be7cbccb07", "storefront sale, not an Oddsmith fee"],
+  ]);
+
+  const excluded = allInflows.filter((r) => NON_SERVICE_INFLOWS.has(r.txHash.toLowerCase()));
+  const rows = allInflows.filter((r) => !NON_SERVICE_INFLOWS.has(r.txHash.toLowerCase()));
+
   if (rows.length === 0) {
     console.log("  no service-fee settlements found yet in the scanned window.");
   } else {
@@ -109,6 +124,15 @@ async function main(): Promise<void> {
     for (const r of rows.slice(-20)) {
       console.log(`   block ${r.block}  $${r.usd.toFixed(4).padStart(8)}  from ${r.from.slice(0, 10)}...  tx ${r.txHash}`);
     }
+  }
+
+  if (excluded.length > 0) {
+    const excludedTotal = excluded.reduce((s, r) => s + r.usd, 0);
+    console.log(`\n  [excluded] ${excluded.length} treasury inflows that are NOT Oddsmith service fees  |  $${excludedTotal.toFixed(4)} USDt0`);
+    for (const r of excluded) {
+      console.log(`   block ${r.block}  $${r.usd.toFixed(4).padStart(8)}  from ${r.from.slice(0, 10)}...  ${NON_SERVICE_INFLOWS.get(r.txHash.toLowerCase())}`);
+    }
+    console.log(`   (raw inflows to this address total $${allInflows.reduce((s, r) => s + r.usd, 0).toFixed(4)}; the difference is above)`);
   }
 
   // ---- swaps: re-derive the desk's real fills from the chain ----
