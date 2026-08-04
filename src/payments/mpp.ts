@@ -17,6 +17,7 @@ import { Mppx } from "@okxweb3/mpp";
 import { SaApiClient } from "@okxweb3/mpp/evm";
 import { charge, session } from "@okxweb3/mpp/evm/server";
 import { USDT0 } from "../chain/xlayer.js";
+import { runExecution, ExecuteRequestError, type ExecuteRequest } from "../execute/run.js";
 
 const CHAIN_ID = 196;
 const ESCROW = process.env.MPP_ESCROW ?? "0x5E550002e64FaF79B41D89fE8439eEb1be66CE3b";
@@ -97,6 +98,15 @@ export async function mandateEnrollHandler(req: ExReq, res: ExRes): Promise<void
 
 /** Pay-per-execution channel: deposit once, then fire executions against off-chain vouchers. */
 export async function deskSessionHandler(req: ExReq, res: ExRes): Promise<void> {
+  const body = (req.body ?? {}) as ExecuteRequest;
+  if (!body.asset || typeof body.asset !== "string") {
+    res.status(400).json({ error: "body must include { asset }" });
+    return;
+  }
+  if (typeof body.amountUsd !== "number" || !Number.isFinite(body.amountUsd)) {
+    res.status(400).json({ error: "body must include { amountUsd } as a number" });
+    return;
+  }
   const sessionOpts = {
     amount: "20000", // unit price: 0.02 USDt0 per execution - matches /api/execute
     currency: USDT0,
@@ -114,8 +124,14 @@ export async function deskSessionHandler(req: ExReq, res: ExRes): Promise<void> 
   try {
     const result = await mpp().session(sessionOpts)(toWeb(req));
     if (result.status === 402) return send(res, result.challenge);
-    return send(res, result.withReceipt(Response.json({ ok: true })));
+    // The voucher pays for one execution - this is the call that actually
+    // resolves, applies discipline, and (live + confirmed) fires the swap,
+    // the same path POST /api/execute uses. Without this the channel would
+    // take payment per voucher and never execute anything.
+    const report = await runExecution(body);
+    return send(res, result.withReceipt(Response.json(report)));
   } catch (e) {
+    if (e instanceof ExecuteRequestError) return void res.status(400).json({ error: e.message });
     res.status(500).json({ error: `desk session failed: ${(e as Error).message}` });
   }
 }

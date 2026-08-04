@@ -83,6 +83,25 @@ export interface ExecutionReport {
 
 export class ExecuteRequestError extends Error {}
 
+let liveQueue: Promise<void> = Promise.resolve();
+
+/**
+ * Serializes the live-execution critical section (check-then-swap) so two
+ * concurrent live requests can never both read the same pre-swap daily total
+ * and both be approved past the ceiling. A fresh chain read alone doesn't
+ * close this: if neither swap has landed yet when the other's check runs,
+ * both checks see the same "spent today" figure. Paper/preview requests never
+ * enter this queue, so they stay instant regardless of live traffic.
+ */
+function serializeLive<T>(fn: () => Promise<T>): Promise<T> {
+  const result = liveQueue.then(fn, fn);
+  liveQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
 async function resolveAndQuote(req: ExecuteRequest): Promise<{ token: TokenInfo; view: QuoteView }> {
   const token = await resolveToken(req.asset);
   const amountUsd = req.amountUsd > 0 ? req.amountUsd : 1;
@@ -131,6 +150,7 @@ export async function runExecution(req: ExecuteRequest): Promise<ExecutionReport
   const at = new Date().toISOString();
   const wantLive = config.live && req.confirm === true;
 
+  // Reads only (quote lookup) — safe to run concurrently regardless of mode.
   const { token, view } = await resolveAndQuote(req);
   const conviction: Conviction = {
     asset: token.symbol,
@@ -139,56 +159,63 @@ export async function runExecution(req: ExecuteRequest): Promise<ExecutionReport
     fairValue: req.fairValue,
     slippagePercent: req.slippagePercent,
   };
-  const decision: Decision = decide(conviction, view, await spentToday(wantLive));
 
   const baseReport: ExecutionReport = {
     id, at, mode: wantLive ? "live" : "paper", filled: false, status: "held",
     asset: { symbol: token.symbol, address: token.address },
     quote: { price: view.price, toAmount: view.toAmount },
-    decision: { approved: false, edge: decision.edge },
+    decision: { approved: false, edge: null },
     order: null, fill: null,
   };
 
-  if (!decision.approved) {
-    const report = { ...baseReport, decision: { approved: false, reason: decision.reason, edge: decision.edge } };
-    saveExecution(report);
-    return report;
-  }
+  // The daily-ceiling check and (if approved) the swap itself must be atomic
+  // relative to any other live execution — see serializeLive above.
+  const run = async (): Promise<ExecutionReport> => {
+    const decision: Decision = decide(conviction, view, await spentToday(wantLive));
 
-  const { order } = decision;
+    if (!decision.approved) {
+      const report = { ...baseReport, decision: { approved: false, reason: decision.reason, edge: decision.edge } };
+      saveExecution(report);
+      return report;
+    }
 
-  if (!wantLive) {
-    const report: ExecutionReport = {
-      ...baseReport, mode: "paper", status: "preview",
-      decision: { approved: true, rationale: decision.rationale, edge: decision.edge },
-      order: { ...order }, fill: null,
-    };
-    saveExecution(report);
-    return report;
-  }
+    const { order } = decision;
 
-  try {
-    const swap = await executeSwap(token, order.amountUsd, order.slippagePercent);
-    invalidateFills(); // this fill counts against the daily ceiling immediately
-    const report: ExecutionReport = {
-      ...baseReport, mode: "live", filled: swap.status === "success",
-      status: swap.status === "success" ? "filled" : "reverted",
-      decision: { approved: true, rationale: decision.rationale, edge: decision.edge },
-      order: { ...order },
-      fill: { txHash: swap.txHash, block: swap.block, toAmount: swap.toAmount, price: swap.price },
-    };
-    saveExecution(report);
-    return report;
-  } catch (e) {
-    const report: ExecutionReport = {
-      ...baseReport, mode: "live", status: "execution_error",
-      decision: { approved: true, rationale: decision.rationale, edge: decision.edge },
-      order: { ...order }, fill: null,
-    };
-    (report as ExecutionReport & { error?: string }).error = (e as Error).message;
-    saveExecution(report);
-    return report;
-  }
+    if (!wantLive) {
+      const report: ExecutionReport = {
+        ...baseReport, mode: "paper", status: "preview",
+        decision: { approved: true, rationale: decision.rationale, edge: decision.edge },
+        order: { ...order }, fill: null,
+      };
+      saveExecution(report);
+      return report;
+    }
+
+    try {
+      const swap = await executeSwap(token, order.amountUsd, order.slippagePercent);
+      invalidateFills(); // this fill counts against the daily ceiling immediately
+      const report: ExecutionReport = {
+        ...baseReport, mode: "live", filled: swap.status === "success",
+        status: swap.status === "success" ? "filled" : "reverted",
+        decision: { approved: true, rationale: decision.rationale, edge: decision.edge },
+        order: { ...order },
+        fill: { txHash: swap.txHash, block: swap.block, toAmount: swap.toAmount, price: swap.price },
+      };
+      saveExecution(report);
+      return report;
+    } catch (e) {
+      const report: ExecutionReport = {
+        ...baseReport, mode: "live", status: "execution_error",
+        decision: { approved: true, rationale: decision.rationale, edge: decision.edge },
+        order: { ...order }, fill: null,
+      };
+      (report as ExecutionReport & { error?: string }).error = (e as Error).message;
+      saveExecution(report);
+      return report;
+    }
+  };
+
+  return wantLive ? serializeLive(run) : run();
 }
 
 export { deskAddress };
