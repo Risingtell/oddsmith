@@ -12,3 +12,7 @@ SUBMISSION.md
 DEMO_SCRIPT.md
 VIDEO_SCRIPT.md
 PLAN.md
+
+# local red-team harness, never deployed
+scan-review.ts
+scan-review-results.json
