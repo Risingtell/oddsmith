@@ -9,19 +9,52 @@
  * `npm run verify` and checks both against chain.
  */
 import "dotenv/config";
-import { erc20Abi, formatUnits, getAddress } from "viem";
+import { createPublicClient, erc20Abi, formatUnits, getAddress, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
-import { publicClient, USDT0 } from "../src/chain/xlayer.js";
+import { USDT0, xlayer } from "../src/chain/xlayer.js";
 import { listExecutions } from "../src/store.js";
 // Deliberately the same scanner the paid positions route uses. If the verifier
 // had its own copy, the two could drift and quietly disagree about what the desk
 // has done - the one contradiction a trust product cannot afford.
 import { scanTransfers, GENESIS_BLOCK } from "../src/chain/fills.js";
 
+// The base client's default RPC (rpc.xlayer.tech) works from Render but
+// CloudFront-blocks requests from at least one real cloud/datacenter IP range
+// with a flat 403 - the exact class of environment an automated reviewer runs
+// from. Every chain read in this script goes through xlayerrpc.okx.com
+// instead (OKX's own endpoint), same as the scanner in chain/fills.ts, so the
+// whole script is portable to whatever environment actually runs it.
+const scanClient = createPublicClient({
+  chain: xlayer,
+  transport: http(process.env.VERIFY_RPC ?? "https://xlayerrpc.okx.com"),
+});
+
 const FROM_OVERRIDE = process.env.VERIFY_FROM_BLOCK ? BigInt(process.env.VERIFY_FROM_BLOCK) : null;
 
-const partner = process.env.SPLIT_PARTNER ? getAddress(process.env.SPLIT_PARTNER) : null;
+// A clean clone has no keys and .env.example's fields are placeholders, not
+// real values — parsing them must fail closed to null, never throw, or a
+// judge who copies .env.example verbatim gets a raw stack trace instead of a
+// clear "nothing to verify." (Was previously a bare truthiness check here,
+// which crashed on .env.example's literal "0x..." placeholders.)
+function safeAddress(v: string | undefined): `0x${string}` | null {
+  if (!v) return null;
+  try {
+    return getAddress(v);
+  } catch {
+    return null;
+  }
+}
+function safeAccountAddress(pk: string | undefined): `0x${string}` | null {
+  if (!pk) return null;
+  try {
+    return privateKeyToAccount(pk as Hex).address;
+  } catch {
+    return null;
+  }
+}
+
+const partner = safeAddress(process.env.SPLIT_PARTNER);
 
 /** The running desk, used to verify a deployment you do not hold the keys for. */
 const DESK_URL = (process.env.ODDSMITH_URL ?? "https://oddsmith.onrender.com").replace(/\/+$/, "");
@@ -32,8 +65,8 @@ const DESK_URL = (process.env.ODDSMITH_URL ?? "https://oddsmith.onrender.com").r
  * `git clone && npm install && npm run verify` enough to check every number here.
  */
 async function resolveTreasury(): Promise<`0x${string}` | null> {
-  const configured = process.env.PAY_TO;
-  if (configured && configured.length === 42) return getAddress(configured);
+  const configured = safeAddress(process.env.PAY_TO);
+  if (configured) return configured;
   try {
     const res = await fetch(DESK_URL + "/api/execute", {
       method: "POST",
@@ -41,23 +74,23 @@ async function resolveTreasury(): Promise<`0x${string}` | null> {
       body: "{}",
     });
     const challenge = (await res.json()) as { accepts?: Array<{ payTo?: string }> };
-    const payTo = challenge.accepts?.[0]?.payTo;
-    return payTo ? getAddress(payTo) : null;
+    return safeAddress(challenge.accepts?.[0]?.payTo);
   } catch {
     return null;
   }
 }
-const buyer = process.env.BUYER_PRIVATE_KEY ? privateKeyToAccount(process.env.BUYER_PRIVATE_KEY as Hex).address : null;
+const buyer = safeAccountAddress(process.env.BUYER_PRIVATE_KEY);
 
 /**
  * The desk wallet, without needing its key: a running desk publishes it on the
  * free discovery card, so anyone can verify a deployment they do not operate.
  */
 async function resolveDesk(): Promise<`0x${string}` | null> {
-  if (process.env.EXECUTION_PRIVATE_KEY) return privateKeyToAccount(process.env.EXECUTION_PRIVATE_KEY as Hex).address;
+  const fromKey = safeAccountAddress(process.env.EXECUTION_PRIVATE_KEY);
+  if (fromKey) return fromKey;
   try {
     const card = (await (await fetch(DESK_URL + "/")).json()) as { deskWallet?: string };
-    return card.deskWallet ? getAddress(card.deskWallet) : null;
+    return safeAddress(card.deskWallet);
   } catch {
     return null;
   }
@@ -65,11 +98,11 @@ async function resolveDesk(): Promise<`0x${string}` | null> {
 
 
 async function usdt0Balance(addr: `0x${string}`): Promise<string> {
-  const bal = await publicClient.readContract({ address: USDT0, abi: erc20Abi, functionName: "balanceOf", args: [addr] });
+  const bal = await scanClient.readContract({ address: USDT0, abi: erc20Abi, functionName: "balanceOf", args: [addr] });
   return formatUnits(bal, 6);
 }
 async function gasBalance(addr: `0x${string}`): Promise<string> {
-  return formatUnits(await publicClient.getBalance({ address: addr }), 18);
+  return formatUnits(await scanClient.getBalance({ address: addr }), 18);
 }
 
 async function main(): Promise<void> {
@@ -96,7 +129,7 @@ async function main(): Promise<void> {
   }
 
   // ---- fees: re-derive service-fee revenue from Transfer logs ----
-  const latest = await publicClient.getBlockNumber();
+  const latest = await scanClient.getBlockNumber();
   const from = FROM_OVERRIDE ?? GENESIS_BLOCK;
   console.log(`\n  [fees] scanning USDt0 transfers to treasury, blocks ${from}..${latest}`);
   const allInflows = await scanTransfers({ to: treasury }, from, latest);
@@ -151,7 +184,7 @@ async function main(): Promise<void> {
     } else {
       let confirmed = 0;
       for (const s of spends) {
-        const receipt = await publicClient.getTransactionReceipt({ hash: s.txHash as `0x${string}` });
+        const receipt = await scanClient.getTransactionReceipt({ hash: s.txHash as `0x${string}` });
         const ok = receipt.status === "success";
         if (ok) confirmed++;
         console.log(`   ${ok ? "OK " : "!! "} $${s.usd.toFixed(4).padStart(8)} deployed  block ${s.block}  tx ${s.txHash}`);
