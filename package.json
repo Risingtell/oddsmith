@@ -27,5 +27,9 @@
     "@types/express": "^4.17.21",
     "@types/node": "^22.10.0",
     "typescript": "^5.7.2"
+  },
+  "overrides": {
+    "mppx": "^0.4.11",
+    "body-parser": "^1.20.6"
   }
 }
